@@ -354,7 +354,7 @@ function JobCard({ job, selected, isDemo, isChain, onClick }: { job: Job; select
           <span style={s.jobId}>#{String(job.jobId).padStart(4, '0')}</span>
           <span style={s.tag}>{job.tag}</span>
           {isDemo  && <span style={s.demoPill}>demo</span>}
-          {isChain && <span style={{ ...s.demoPill, color: '#34d399', background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)' }}>live</span>}
+          {isChain && <span style={{ ...s.demoPill, color: '#f59e0b', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)' }}>live</span>}
         </div>
         <StatusDot status={job.status} />
       </div>

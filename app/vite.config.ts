@@ -8,13 +8,16 @@ export default defineConfig({
     port: 5173,
   },
   define: {
-    // Required for Anchor/web3.js in the browser
     "process.env": {},
     global: "globalThis",
   },
   resolve: {
     alias: {
+      buffer: "buffer",
       stream: "stream-browserify",
     },
+  },
+  optimizeDeps: {
+    include: ["buffer"],
   },
 });
