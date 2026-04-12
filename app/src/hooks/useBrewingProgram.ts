@@ -1,15 +1,14 @@
 import { useMemo } from "react";
 import { AnchorProvider, Program } from "@coral-xyz/anchor";
 import { useAnchorWallet, useConnection } from "@solana/wallet-adapter-react";
-import { type Brewing } from "../idl/brewing";
 import IDL from "../idl/brewing.json";
-import { PROGRAM_ID } from "../utils/pdas";
 
 /**
- * Returns a typed Anchor `Program<Brewing>` bound to the connected wallet.
- * Returns `null` when no wallet is connected.
+ * Returns a typed Anchor Program bound to the connected wallet.
+ * Returns null when no wallet is connected.
  */
-export function useBrewingProgram(): Program<Brewing> | null {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function useBrewingProgram(): Program<any> | null {
   const { connection } = useConnection();
   const wallet = useAnchorWallet();
 
@@ -18,6 +17,7 @@ export function useBrewingProgram(): Program<Brewing> | null {
     const provider = new AnchorProvider(connection, wallet, {
       commitment: "confirmed",
     });
-    return new Program<Brewing>(IDL as Brewing, provider);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return new Program(IDL as any, provider);
   }, [connection, wallet]);
 }

@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { PublicKey } from '@solana/web3.js';
+import BN from 'bn.js';
 import {
   MOCK_JOBS,
   MOCK_ACTIVITY,
@@ -17,12 +20,17 @@ import {
   STATUS_META,
   ACTIVITY_META,
 } from '../data/mockData';
+import { useBrewingProgram } from '../hooks/useBrewingProgram';
+import { useJobActions } from '../hooks/useJobActions';
 
-// ── Accent constant (single source of truth) ──────────────────────────────────
-const A = '#F59E0B';
+// ── Accent constant ────────────────────────────────────────────────────────────
+const A   = '#F59E0B';
 const A12 = 'rgba(245,158,11,0.12)';
 const A20 = 'rgba(245,158,11,0.20)';
 const A30 = 'rgba(245,158,11,0.30)';
+
+const EXPLORER = (sig: string) =>
+  `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
 
 const DEMO_JOB_OPEN: Job = {
   jobId: DEMO_JOB_ID,
@@ -35,25 +43,79 @@ const DEMO_JOB_OPEN: Job = {
   tag: 'AI · Trading',
 };
 
-// ── Root ──────────────────────────────────────────────────────────────────────
+// ── Map on-chain status enum → JobStatus ──────────────────────────────────────
+function parseChainStatus(raw: Record<string, unknown>): JobStatus {
+  if ('open' in raw)           return 'Open';
+  if ('inProgress' in raw)     return 'InProgress';
+  if ('pendingRelease' in raw) return 'PendingRelease';
+  if ('completed' in raw)      return 'Completed';
+  return 'Cancelled';
+}
+
+// ── Map on-chain JobAccount → frontend Job ────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function chainToJob(pubkey: PublicKey, acc: any): Job {
+  const zeroKey = PublicKey.default.toBase58();
+  const workerStr = (acc.workerAgent as PublicKey).toBase58();
+  return {
+    jobId:        (acc.jobId as BN).toNumber(),
+    description:  acc.description as string,
+    paymentUsdc:  (acc.paymentAmount as BN).toNumber() / 1_000_000,
+    posterAgent:  (acc.posterAgent as PublicKey).toBase58(),
+    workerAgent:  workerStr === zeroKey ? null : workerStr,
+    status:       parseChainStatus(acc.status as Record<string, unknown>),
+    postedAt:     new Date(),
+    tag:          'On-chain',
+    _pubkey:      pubkey.toBase58(),
+  } as Job & { _pubkey: string };
+}
+
+// ── Root ───────────────────────────────────────────────────────────────────────
 
 export default function JobBoard() {
+  const { publicKey } = useWallet();
+  const program = useBrewingProgram();
+
   const [filter, setFilter]             = useState<'All' | JobStatus>('All');
   const [selectedJob, setSelectedJob]   = useState<Job | null>(null);
   const [showPostForm, setShowPostForm] = useState(false);
-  const [jobs, setJobs]                 = useState<Job[]>(MOCK_JOBS);
+  const [mockJobs, setMockJobs]         = useState<Job[]>(MOCK_JOBS);
+  const [chainJobs, setChainJobs]       = useState<Job[]>([]);
   const [feedEvents, setFeedEvents]     = useState<ActivityEvent[]>(MOCK_ACTIVITY);
   const [tick, setTick]                 = useState(0);
   const [demoStep, setDemoStep]         = useState(0);
   const [demoBusy, setDemoBusy]         = useState(false);
+  const [toast, setToast]               = useState<{ msg: string; sig?: string; err?: boolean } | null>(null);
   const liveIdx                         = useRef(0);
 
+  // ── Clock tick (for relative timestamps) ──────────────────────────────────
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
   void tick;
 
+  // ── Fetch on-chain jobs ────────────────────────────────────────────────────
+  const fetchChainJobs = useCallback(async () => {
+    if (!program) { setChainJobs([]); return; }
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const accs = await (program.account as any).jobAccount.all();
+      setChainJobs(accs.map((a: { publicKey: PublicKey; account: unknown }) =>
+        chainToJob(a.publicKey, a.account)));
+    } catch (e) {
+      console.warn('chain fetch error', e);
+    }
+  }, [program]);
+
+  useEffect(() => { fetchChainJobs(); }, [fetchChainJobs]);
+
+  // ── Merge jobs: chain jobs shown first when wallet connected ───────────────
+  const allJobs = publicKey
+    ? [...chainJobs, ...mockJobs.filter(m => m.jobId !== DEMO_JOB_ID || !demoBusy)]
+    : mockJobs;
+
+  // ── Live activity feed ─────────────────────────────────────────────────────
   const pushEvent = useCallback((ev: ActivityEvent) => {
     setFeedEvents(prev => [ev, ...prev.slice(0, 14)]);
   }, []);
@@ -72,31 +134,38 @@ export default function JobBoard() {
     return () => clearTimeout(t);
   }, [pushEvent]);
 
+  // ── Toast helper ──────────────────────────────────────────────────────────
+  const showToast = useCallback((msg: string, sig?: string, err = false) => {
+    setToast({ msg, sig, err });
+    setTimeout(() => setToast(null), 6000);
+  }, []);
+
+  // ── Demo flow ─────────────────────────────────────────────────────────────
   function runDemo() {
     if (demoBusy) return;
     setDemoBusy(true);
     setFilter('All');
     setSelectedJob(null);
     setShowPostForm(false);
-    setJobs(prev => prev.filter(j => j.jobId !== DEMO_JOB_ID));
+    setMockJobs(prev => prev.filter(j => j.jobId !== DEMO_JOB_ID));
 
     setDemoStep(1);
-    setJobs(prev => [DEMO_JOB_OPEN, ...prev]);
+    setMockJobs(prev => [DEMO_JOB_OPEN, ...prev]);
     pushEvent({ id: `d-post-${Date.now()}`, type: 'JobPosted', jobId: DEMO_JOB_ID, actor: DEMO_POSTER, amount: 0.10, secondsAgo: 0, txSig: 'DmXp1KrT3nWqN8xVbYcA4sL6uHdLuEiGjOw9Pv2e' });
 
     setTimeout(() => {
       setDemoStep(2);
-      setJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'InProgress' as JobStatus, workerAgent: DEMO_WORKER, acceptedAt: new Date() } : j));
+      setMockJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'InProgress' as JobStatus, workerAgent: DEMO_WORKER, acceptedAt: new Date() } : j));
       pushEvent({ id: `d-acc-${Date.now()}`, type: 'JobAccepted', jobId: DEMO_JOB_ID, actor: DEMO_WORKER, secondsAgo: 0, txSig: 'DmYq2LsU4oXrO9yWcZdB5tM7vIeGjPx1Qw3f' });
 
       setTimeout(() => {
         setDemoStep(3);
-        setJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'PendingRelease' as JobStatus, completedAt: new Date() } : j));
+        setMockJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'PendingRelease' as JobStatus, completedAt: new Date() } : j));
         pushEvent({ id: `d-cmp-${Date.now()}`, type: 'JobCompleted', jobId: DEMO_JOB_ID, actor: DEMO_WORKER, secondsAgo: 0, txSig: 'DmZr3MtV5pYsP0zXdAeC6uN8wJfHkQy2Rx4g' });
 
         setTimeout(() => {
           setDemoStep(4);
-          setJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'Completed' as JobStatus } : j));
+          setMockJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'Completed' as JobStatus } : j));
           pushEvent({ id: `d-rel-${Date.now()}`, type: 'PaymentReleased', jobId: DEMO_JOB_ID, actor: DEMO_POSTER, counterparty: DEMO_WORKER, amount: 0.10, secondsAgo: 0, txSig: 'DmAs4NuW6qZtQ1aYeBfD7vO9xKgIlRz3Sy5h' });
 
           setTimeout(() => {
@@ -108,26 +177,54 @@ export default function JobBoard() {
     }, 2500);
   }
 
-  const filtered = filter === 'All' ? jobs : jobs.filter(j => j.status === filter);
+  const filtered = filter === 'All' ? allJobs : allJobs.filter(j => j.status === filter);
 
   return (
     <div style={s.shell}>
+      {toast && <Toast msg={toast.msg} sig={toast.sig} err={toast.err} />}
       <Header onPost={() => { setShowPostForm(v => !v); setSelectedJob(null); }} onDemo={runDemo} demoBusy={demoBusy} demoStep={demoStep} />
-      <StatsBar />
+      <StatsBar chainCount={chainJobs.length} />
       <div style={s.body}>
         <div style={s.leftCol}>
-          <FilterBar active={filter} onChange={f => { setFilter(f); setSelectedJob(null); }} jobs={jobs} />
-          {showPostForm && <PostJobForm onClose={() => setShowPostForm(false)} />}
+          <FilterBar active={filter} onChange={f => { setFilter(f); setSelectedJob(null); }} jobs={allJobs} />
+          {showPostForm && (
+            <PostJobForm
+              onClose={() => setShowPostForm(false)}
+              onSuccess={(sig) => {
+                setShowPostForm(false);
+                showToast('Job posted — USDC locked in escrow', sig);
+                fetchChainJobs();
+              }}
+              onError={(msg) => showToast(msg, undefined, true)}
+            />
+          )}
           <div style={s.jobList}>
             {filtered.map(job => (
-              <JobCard key={job.jobId} job={job} selected={selectedJob?.jobId === job.jobId} isDemo={job.jobId === DEMO_JOB_ID && demoBusy}
-                onClick={() => setSelectedJob(j => j?.jobId === job.jobId ? null : job)} />
+              <JobCard
+                key={`${job.jobId}-${(job as Job & { _pubkey?: string })._pubkey ?? 'mock'}`}
+                job={job}
+                selected={selectedJob?.jobId === job.jobId}
+                isDemo={job.jobId === DEMO_JOB_ID && demoBusy}
+                isChain={(job as Job & { _pubkey?: string })._pubkey !== undefined}
+                onClick={() => setSelectedJob(j => j?.jobId === job.jobId ? null : job)}
+              />
             ))}
           </div>
         </div>
         <div style={s.rightCol}>
           {demoStep > 0 && <DemoConsole step={demoStep} />}
-          {!demoStep && selectedJob && <JobDetail job={selectedJob} onClose={() => setSelectedJob(null)} />}
+          {!demoStep && selectedJob && (
+            <JobDetail
+              job={selectedJob}
+              onClose={() => setSelectedJob(null)}
+              onSuccess={(sig, type) => {
+                showToast(`${type} confirmed`, sig);
+                fetchChainJobs();
+                setSelectedJob(null);
+              }}
+              onError={(msg) => showToast(msg, undefined, true)}
+            />
+          )}
           <ActivityPanel events={feedEvents} compact={demoStep > 0} />
         </div>
       </div>
@@ -135,7 +232,32 @@ export default function JobBoard() {
   );
 }
 
-// ── Header ────────────────────────────────────────────────────────────────────
+// ── Toast notification ─────────────────────────────────────────────────────────
+
+function Toast({ msg, sig, err }: { msg: string; sig?: string; err?: boolean }) {
+  return (
+    <div style={{
+      position: 'fixed', bottom: 20, right: 20, zIndex: 9000,
+      background: err ? '#1a0a0a' : '#0f0f0f',
+      border: `1px solid ${err ? 'rgba(239,68,68,0.3)' : A30}`,
+      borderRadius: 8, padding: '12px 16px', maxWidth: 340,
+      animation: 'slide-in-top 0.2s ease both',
+      boxShadow: `0 4px 20px rgba(0,0,0,0.6)`,
+    }}>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: err ? '#f87171' : A, marginBottom: sig ? 6 : 0 }}>
+        {err ? '✕ ' : '✓ '}{msg}
+      </div>
+      {sig && (
+        <a href={EXPLORER(sig)} target="_blank" rel="noreferrer"
+          style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', textDecoration: 'underline', display: 'block' }}>
+          View on Explorer ↗
+        </a>
+      )}
+    </div>
+  );
+}
+
+// ── Header ─────────────────────────────────────────────────────────────────────
 
 function Header({ onPost, onDemo, demoBusy, demoStep }: { onPost: () => void; onDemo: () => void; demoBusy: boolean; demoStep: number }) {
   return (
@@ -159,17 +281,17 @@ function Header({ onPost, onDemo, demoBusy, demoStep }: { onPost: () => void; on
   );
 }
 
-function Spinner() {
-  return <span style={{ display: 'inline-block', width: 10, height: 10, border: `1.5px solid ${A30}`, borderTopColor: A, borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />;
+function Spinner({ size = 10 }: { size?: number }) {
+  return <span style={{ display: 'inline-block', width: size, height: size, border: `1.5px solid ${A30}`, borderTopColor: A, borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />;
 }
 
 // ── Stats bar ──────────────────────────────────────────────────────────────────
 
-function StatsBar() {
+function StatsBar({ chainCount }: { chainCount: number }) {
   const st = MOCK_STATS;
   return (
     <div style={s.statsBar}>
-      <Stat label="Total Jobs"    value={st.totalJobs.toLocaleString()} />
+      <Stat label="Total Jobs"    value={(st.totalJobs + chainCount).toLocaleString()} />
       <StatDiv />
       <Stat label="USDC Settled"  value={`$${(st.usdcSettled / 1000).toFixed(1)}k`} accent />
       <StatDiv />
@@ -181,7 +303,7 @@ function StatsBar() {
       <StatDiv />
       <Stat label="Avg Payment"   value={`$${st.avgPayment}`} />
       <StatDiv />
-      <Stat label="Success Rate"  value={`${st.successRate}%`} />
+      <Stat label="On-chain"      value={chainCount.toString()} accent={chainCount > 0} />
     </div>
   );
 }
@@ -224,14 +346,15 @@ function FilterBar({ active, onChange, jobs }: { active: FilterOption; onChange:
 
 // ── Job card ───────────────────────────────────────────────────────────────────
 
-function JobCard({ job, selected, isDemo, onClick }: { job: Job; selected: boolean; isDemo: boolean; onClick: () => void }) {
+function JobCard({ job, selected, isDemo, isChain, onClick }: { job: Job; selected: boolean; isDemo: boolean; isChain: boolean; onClick: () => void }) {
   return (
     <div onClick={onClick} style={{ ...s.jobCard, ...(selected ? s.jobCardSelected : {}), ...(isDemo ? s.jobCardDemo : {}) }}>
       <div style={s.jobCardTop}>
         <div style={s.jobIdRow}>
           <span style={s.jobId}>#{String(job.jobId).padStart(4, '0')}</span>
           <span style={s.tag}>{job.tag}</span>
-          {isDemo && <span style={s.demoPill}>demo</span>}
+          {isDemo  && <span style={s.demoPill}>demo</span>}
+          {isChain && <span style={{ ...s.demoPill, color: '#34d399', background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)' }}>live</span>}
         </div>
         <StatusDot status={job.status} />
       </div>
@@ -250,7 +373,7 @@ function JobCard({ job, selected, isDemo, onClick }: { job: Job; selected: boole
   );
 }
 
-// ── Status dot — minimal, amber only ──────────────────────────────────────────
+// ── Status dot ─────────────────────────────────────────────────────────────────
 
 function StatusDot({ status, large }: { status: JobStatus; large?: boolean }) {
   const meta = STATUS_META[status];
@@ -277,16 +400,41 @@ function StatusDot({ status, large }: { status: JobStatus; large?: boolean }) {
 
 // ── Job detail ─────────────────────────────────────────────────────────────────
 
-function JobDetail({ job, onClose }: { job: Job; onClose: () => void }) {
+function JobDetail({ job, onClose, onSuccess, onError }: {
+  job: Job;
+  onClose: () => void;
+  onSuccess: (sig: string, type: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const { publicKey } = useWallet();
+  const { acceptJob, completeJob, releasePayment } = useJobActions();
+  const [busy, setBusy] = useState(false);
+
+  const isChain = (job as Job & { _pubkey?: string })._pubkey !== undefined;
+  const isPoster = publicKey?.toBase58() === job.posterAgent;
+  const isWorker = publicKey?.toBase58() === job.workerAgent;
+
+  async function handleAction(label: string, fn: () => Promise<string>) {
+    if (!publicKey) { onError('Connect wallet first'); return; }
+    setBusy(true);
+    try {
+      const sig = await fn();
+      onSuccess(sig, label);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      onError(msg.slice(0, 120));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div style={s.detailPanel}>
       <div style={s.panelHeader}>
         <span style={s.panelTitle}>#{String(job.jobId).padStart(4, '0')}</span>
         <button onClick={onClose} style={s.closeBtn}>✕</button>
       </div>
-      <div style={s.detailSection}>
-        <StatusDot status={job.status} large />
-      </div>
+      <div style={s.detailSection}><StatusDot status={job.status} large /></div>
       <div style={s.detailSection}>
         <div style={s.detailLabel}>DESCRIPTION</div>
         <p style={s.detailText}>{job.description}</p>
@@ -318,9 +466,38 @@ function JobDetail({ job, onClose }: { job: Job; onClose: () => void }) {
         {job.completedAt && <TlItem label="Completed" date={job.completedAt} />}
       </div>
       <EscrowBar job={job} />
-      {job.status === 'Open'           && <ActionBtn label="Accept Job" />}
-      {job.status === 'InProgress'     && <ActionBtn label="Mark Complete" />}
-      {job.status === 'PendingRelease' && <ActionBtn label="Release Payment" primary />}
+
+      {/* ── Action buttons — only shown for live on-chain jobs ── */}
+      {isChain && job.status === 'Open' && !isPoster && (
+        <ActionBtn
+          label="Accept Job"
+          busy={busy}
+          onClick={() => handleAction('Job accepted', () =>
+            acceptJob(job.jobId, new PublicKey(job.posterAgent)))}
+        />
+      )}
+      {isChain && job.status === 'InProgress' && isWorker && (
+        <ActionBtn
+          label="Mark Complete"
+          busy={busy}
+          onClick={() => handleAction('Work delivered', () =>
+            completeJob(job.jobId, new PublicKey(job.posterAgent)))}
+        />
+      )}
+      {isChain && job.status === 'PendingRelease' && isPoster && (
+        <ActionBtn
+          label="Release Payment"
+          primary
+          busy={busy}
+          onClick={() => handleAction('Payment released', () =>
+            releasePayment(job.jobId, new PublicKey(job.workerAgent!)))}
+        />
+      )}
+
+      {/* Mock job CTA */}
+      {!isChain && job.status === 'Open'           && <ActionBtn label="Accept Job (mock)" />}
+      {!isChain && job.status === 'InProgress'     && <ActionBtn label="Mark Complete (mock)" />}
+      {!isChain && job.status === 'PendingRelease' && <ActionBtn label="Release Payment (mock)" primary />}
     </div>
   );
 }
@@ -350,16 +527,25 @@ function EscrowBar({ job }: { job: Job }) {
   );
 }
 
-function ActionBtn({ label, primary }: { label: string; primary?: boolean }) {
+function ActionBtn({ label, primary, busy, onClick }: { label: string; primary?: boolean; busy?: boolean; onClick?: () => void }) {
   return (
-    <button style={{
-      margin: '14px 20px 20px', padding: '9px 0', width: 'calc(100% - 40px)',
-      background: primary ? A12 : 'transparent',
-      border: `1px solid ${primary ? A30 : 'var(--border-mid)'}`,
-      borderRadius: 6, color: primary ? A : 'var(--text-secondary)',
-      fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 500,
-      letterSpacing: '0.08em', cursor: 'pointer', textAlign: 'center' as const,
-    }}>{label}</button>
+    <button
+      disabled={busy}
+      onClick={onClick}
+      style={{
+        margin: '14px 20px 20px', padding: '9px 0', width: 'calc(100% - 40px)',
+        background: primary ? A12 : 'transparent',
+        border: `1px solid ${primary ? A30 : 'var(--border-mid)'}`,
+        borderRadius: 6, color: primary ? A : 'var(--text-secondary)',
+        fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 500,
+        letterSpacing: '0.08em', cursor: busy ? 'default' : 'pointer',
+        textAlign: 'center' as const, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+        opacity: busy ? 0.7 : 1,
+      }}
+    >
+      {busy && <Spinner size={10} />}
+      {label}
+    </button>
   );
 }
 
@@ -389,7 +575,7 @@ function DemoConsole({ step }: { step: number }) {
                 width: 20, height: 20, borderRadius: '50%', flexShrink: 0, marginTop: 1,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600,
-                background: state === 'done' ? A12 : state === 'active' ? A12 : 'transparent',
+                background: state !== 'pending' ? A12 : 'transparent',
                 border: `1px solid ${state === 'pending' ? 'var(--border)' : A30}`,
                 color: state === 'pending' ? 'var(--text-muted)' : A,
               }}>
@@ -477,12 +663,42 @@ function ActivityPanel({ events, compact }: { events: ActivityEvent[]; compact?:
   );
 }
 
-// ── Post job form ──────────────────────────────────────────────────────────────
+// ── Post job form — wired to on-chain ─────────────────────────────────────────
 
-function PostJobForm({ onClose }: { onClose: () => void }) {
-  const [desc, setDesc]     = useState('');
+function PostJobForm({ onClose, onSuccess, onError }: {
+  onClose: () => void;
+  onSuccess: (sig: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const { publicKey } = useWallet();
+  const { postJob } = useJobActions();
+  const [desc, setDesc]       = useState('');
   const [payment, setPayment] = useState('');
-  const [jobId, setJobId]   = useState('52');
+  const [jobId, setJobId]     = useState(() => String(Math.floor(Date.now() / 1000) % 100000));
+  const [busy, setBusy]       = useState(false);
+
+  async function handleSubmit() {
+    if (!publicKey) { onError('Connect your wallet first'); return; }
+    if (!desc.trim())  { onError('Description is required'); return; }
+    const amt = parseFloat(payment);
+    if (!amt || amt <= 0) { onError('Enter a payment amount > 0'); return; }
+    const id = parseInt(jobId);
+    if (!id || id <= 0) { onError('Enter a valid Job ID'); return; }
+
+    setBusy(true);
+    try {
+      const sig = await postJob(id, desc.trim(), amt);
+      onSuccess(sig);
+    } catch (e: unknown) {
+      const raw = e instanceof Error ? e.message : String(e);
+      // Surface the most useful part of anchor errors
+      const match = raw.match(/Error Message: (.+?)\./) ?? raw.match(/"message":"(.+?)"/);
+      onError(match ? match[1] : raw.slice(0, 120));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div style={s.postForm}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
@@ -490,8 +706,8 @@ function PostJobForm({ onClose }: { onClose: () => void }) {
         <button onClick={onClose} style={s.closeBtn}>✕</button>
       </div>
       {[
-        { label: 'JOB ID', type: 'number', val: jobId, set: setJobId, ph: '52' },
-        { label: 'PAYMENT (USDC)', type: 'number', val: payment, set: setPayment, ph: '100' },
+        { label: 'JOB ID',          type: 'number', val: jobId,    set: setJobId,   ph: 'e.g. 52' },
+        { label: 'PAYMENT (USDC)',  type: 'number', val: payment,  set: setPayment, ph: '100' },
       ].map(({ label, type, val, set, ph }) => (
         <div key={label} style={{ marginBottom: 10 }}>
           <label style={s.formLabel}>{label}</label>
@@ -500,14 +716,21 @@ function PostJobForm({ onClose }: { onClose: () => void }) {
       ))}
       <div style={{ marginBottom: 10 }}>
         <label style={s.formLabel}>DESCRIPTION <span style={{ opacity: 0.4 }}>(max 512)</span></label>
-        <textarea style={{ ...s.formInput, height: 72, resize: 'vertical' } as React.CSSProperties}
-          value={desc} onChange={e => setDesc(e.target.value)} maxLength={512} placeholder="Describe the task for the worker agent…" />
+        <textarea
+          style={{ ...s.formInput, height: 72, resize: 'vertical' } as React.CSSProperties}
+          value={desc} onChange={e => setDesc(e.target.value)} maxLength={512}
+          placeholder="Describe the task for the worker agent…"
+        />
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: 12, letterSpacing: '0.02em' }}>
-        USDC locked in escrow on-chain immediately.
+        {publicKey ? 'USDC locked in escrow on-chain immediately.' : '⚠ Connect wallet to post a job.'}
       </div>
-      <button style={{ ...s.accentBtn, width: '100%', padding: '9px 0', justifyContent: 'center' }}>
-        Post Job + Lock USDC
+      <button
+        disabled={busy || !publicKey}
+        onClick={handleSubmit}
+        style={{ ...s.accentBtn, width: '100%', padding: '9px 0', justifyContent: 'center', opacity: (!publicKey || busy) ? 0.6 : 1 }}
+      >
+        {busy ? <><Spinner /> Confirming…</> : 'Post Job + Lock USDC'}
       </button>
     </div>
   );
@@ -518,7 +741,6 @@ function PostJobForm({ onClose }: { onClose: () => void }) {
 const s = {
   shell: { minHeight: '100vh', background: 'var(--bg-base)', display: 'flex', flexDirection: 'column' as const, overflow: 'hidden' },
 
-  // Header
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     padding: '0 20px', height: 52,
@@ -528,14 +750,8 @@ const s = {
   headerLeft:    { display: 'flex', alignItems: 'center', gap: 14 },
   headerRight:   { display: 'flex', alignItems: 'center', gap: 8 },
   headerDivider: { width: 1, height: 14, background: 'var(--border-mid)' },
-  logo: {
-    fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 15,
-    letterSpacing: '0.16em', color: A,
-  },
-  logoSub: {
-    fontFamily: 'var(--font-mono)', fontSize: 10,
-    letterSpacing: '0.14em', color: 'var(--text-muted)',
-  },
+  logo:    { fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 15, letterSpacing: '0.16em', color: A },
+  logoSub: { fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-muted)' },
   netBadge: {
     display: 'flex', alignItems: 'center', gap: 5, padding: '3px 8px',
     borderRadius: 4, background: A12, border: `1px solid ${A20}`,
@@ -560,7 +776,6 @@ const s = {
     fontSize: 12, fontWeight: 600, letterSpacing: '0.06em', cursor: 'pointer',
   },
 
-  // Stats bar
   statsBar: {
     display: 'flex', alignItems: 'center', padding: '0 20px', height: 48,
     background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)',
@@ -570,12 +785,10 @@ const s = {
   statLabel: { fontSize: 9, letterSpacing: '0.12em', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase' as const },
   statValue: { fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' },
 
-  // Layout
   body:    { display: 'flex', flex: 1, overflow: 'hidden' },
   leftCol: { flex: '0 0 58%', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column' as const, overflow: 'hidden' },
   rightCol: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' as const },
 
-  // Filter bar
   filterBar: {
     display: 'flex', alignItems: 'center', gap: 2, padding: '0 16px',
     height: 44, borderBottom: '1px solid var(--border)', flexShrink: 0,
@@ -586,19 +799,14 @@ const s = {
     color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: 12,
     cursor: 'pointer', letterSpacing: '0.02em',
   },
-  filterTabActive: {
-    color: 'var(--text-primary)', background: 'transparent', border: '1px solid var(--border-mid)',
-  },
+  filterTabActive: { color: 'var(--text-primary)', background: 'transparent', border: '1px solid var(--border-mid)' },
   filterCount: {
     fontSize: 10, padding: '1px 5px', borderRadius: 3,
-    background: 'var(--border)', color: 'var(--text-muted)',
-    fontFamily: 'var(--font-mono)',
+    background: 'var(--border)', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)',
   },
 
-  // Job list
   jobList: { flex: 1, overflowY: 'auto' as const, padding: '10px 12px', display: 'flex', flexDirection: 'column' as const, gap: 6 },
 
-  // Job card
   jobCard: {
     position: 'relative' as const,
     background: 'var(--bg-card)', border: '1px solid var(--border)',
@@ -607,7 +815,6 @@ const s = {
   },
   jobCardSelected: { border: `1px solid ${A30}`, background: 'var(--bg-card-hover)' },
   jobCardDemo:     { border: `1px solid ${A20}` },
-
   jobCardTop:    { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7 },
   jobIdRow:      { display: 'flex', alignItems: 'center', gap: 8 },
   jobId:         { fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em' },
@@ -632,9 +839,8 @@ const s = {
   agentArrow: { color: 'var(--text-muted)', fontSize: 11 },
   payment:    { display: 'flex', alignItems: 'baseline', gap: 3 },
   paymentAmt: { fontSize: 17, fontWeight: 600, fontFamily: 'var(--font-mono)', color: A },
-  paymentUnit:{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', letterSpacing: '0.08em' },
+  paymentUnit: { fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', letterSpacing: '0.08em' },
 
-  // Right panel shared
   panelHeader: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     padding: '12px 20px', borderBottom: '1px solid var(--border)', flexShrink: 0,
@@ -642,41 +848,36 @@ const s = {
   panelTitle: { fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.18em', color: 'var(--text-muted)', fontWeight: 600 },
   closeBtn:   { background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 14, cursor: 'pointer', padding: 4, lineHeight: 1 },
 
-  // Job detail
-  detailPanel: { flexShrink: 0, overflowY: 'auto' as const, borderBottom: '1px solid var(--border)', maxHeight: '55%' },
+  detailPanel:   { flexShrink: 0, overflowY: 'auto' as const, borderBottom: '1px solid var(--border)', maxHeight: '55%' },
   detailSection: { padding: '11px 20px', borderBottom: '1px solid var(--border)' },
-  detailLabel: { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', color: 'var(--text-muted)', marginBottom: 5, textTransform: 'uppercase' as const },
-  detailText:  { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 },
-  detailGrid:  { display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: '1px solid var(--border)' },
-  detailCard:  { padding: '11px 20px', borderRight: '1px solid var(--border)' },
-  detailBigNum: { fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-mono)', color: A },
-  detailUnit:  { fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' },
-  addrFull:    { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', wordBreak: 'break-all' as const, lineHeight: 1.7 },
-  timeline:    { padding: '11px 20px', borderBottom: '1px solid var(--border)', display: 'flex', flexDirection: 'column' as const, gap: 8 },
-  timelineItem: { display: 'flex', alignItems: 'center', gap: 10 },
+  detailLabel:   { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', color: 'var(--text-muted)', marginBottom: 5, textTransform: 'uppercase' as const },
+  detailText:    { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 },
+  detailGrid:    { display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: '1px solid var(--border)' },
+  detailCard:    { padding: '11px 20px', borderRight: '1px solid var(--border)' },
+  detailBigNum:  { fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-mono)', color: A },
+  detailUnit:    { fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' },
+  addrFull:      { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', wordBreak: 'break-all' as const, lineHeight: 1.7 },
+  timeline:      { padding: '11px 20px', borderBottom: '1px solid var(--border)', display: 'flex', flexDirection: 'column' as const, gap: 8 },
+  timelineItem:  { display: 'flex', alignItems: 'center', gap: 10 },
   timelineLabel: { fontSize: 12, color: 'var(--text-secondary)', flex: 1 },
-  timelineDate: { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' },
+  timelineDate:  { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' },
 
-  // Demo console
-  demoConsole: { flexShrink: 0, borderBottom: '1px solid var(--border)' },
-
-  // Activity panel
-  activityPanel: { flex: 1, overflowY: 'auto' as const, display: 'flex', flexDirection: 'column' as const },
+  demoConsole:    { flexShrink: 0, borderBottom: '1px solid var(--border)' },
+  activityPanel:  { flex: 1, overflowY: 'auto' as const, display: 'flex', flexDirection: 'column' as const },
   activityCompact: { maxHeight: 260, flex: 'unset' as const },
   feedRow: {
     display: 'flex', alignItems: 'flex-start', gap: 10, padding: '9px 20px',
     borderBottom: '1px solid var(--border)',
     animation: 'slide-in-top 0.25s ease both',
   },
-  feedIcon: { fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', flexShrink: 0, marginTop: 1, width: 14, textAlign: 'center' as const },
-  feedTop:  { display: 'flex', alignItems: 'center', gap: 7, marginBottom: 2 },
-  feedType: { fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '0.02em' },
-  feedJob:  { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.06em' },
+  feedIcon:   { fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', flexShrink: 0, marginTop: 1, width: 14, textAlign: 'center' as const },
+  feedTop:    { display: 'flex', alignItems: 'center', gap: 7, marginBottom: 2 },
+  feedType:   { fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '0.02em' },
+  feedJob:    { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.06em' },
   feedDetail: { display: 'flex', alignItems: 'center' },
-  feedAddr: { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' },
-  feedTx:   { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.04em' },
+  feedAddr:   { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' },
+  feedTx:     { fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.04em' },
 
-  // Post form
   postForm: {
     margin: '10px 12px', padding: '14px', flexShrink: 0,
     background: 'var(--bg-card)', border: '1px solid var(--border-mid)',

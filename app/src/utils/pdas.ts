@@ -2,7 +2,7 @@ import { PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
 
 export const PROGRAM_ID = new PublicKey(
-  "BrewMktV1111111111111111111111111111111111111"
+  "BsFiGxfJ9Spn5kp6bJoCxAwswKRskpTiPodNt8EA6QdM"
 );
 
 export function jobPda(poster: PublicKey, jobId: BN): [PublicKey, number] {

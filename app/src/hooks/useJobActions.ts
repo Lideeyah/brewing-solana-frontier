@@ -19,84 +19,85 @@ export function useJobActions() {
   const program = useBrewingProgram();
   const { publicKey } = useWallet();
 
+  // Cast to any to avoid TypeScript deep-instantiation errors with Program<any>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const methods = program ? (program as any).methods : null;
+
   const postJob = useCallback(
-    async (jobId: number, description: string, paymentUsdc: number) => {
-      if (!program || !publicKey) throw new Error("Wallet not connected");
+    async (jobId: number, description: string, paymentUsdc: number): Promise<string> => {
+      if (!methods || !publicKey) throw new Error("Wallet not connected");
       const id = new BN(jobId);
       const [jobPubkey] = jobPda(publicKey, id);
       const [escrowPubkey] = escrowPda(publicKey, id);
       const posterAta = await getAssociatedTokenAddress(USDC_MINT, publicKey);
 
-      return program.methods
-        .postJob(id, description, new BN(paymentUsdc * 1_000_000))
+      return methods
+        .postJob(id, description, new BN(Math.round(paymentUsdc * 1_000_000)))
         .accounts({
-          job: jobPubkey,
+          job:                jobPubkey,
           escrowTokenAccount: escrowPubkey,
           posterTokenAccount: posterAta,
-          usdcMint: USDC_MINT,
-          posterAgent: publicKey,
+          usdcMint:           USDC_MINT,
+          posterAgent:        publicKey,
         })
-        .rpc();
+        .rpc() as Promise<string>;
     },
-    [program, publicKey]
+    [methods, publicKey]
   );
 
   const acceptJob = useCallback(
-    async (jobId: number, posterPubkey: PublicKey) => {
-      if (!program || !publicKey) throw new Error("Wallet not connected");
+    async (jobId: number, posterPubkey: PublicKey): Promise<string> => {
+      if (!methods || !publicKey) throw new Error("Wallet not connected");
       const id = new BN(jobId);
       const [jobPubkey] = jobPda(posterPubkey, id);
 
-      return program.methods
+      return methods
         .acceptJob(id)
         .accounts({
-          job: jobPubkey,
+          job:         jobPubkey,
           workerAgent: publicKey,
         })
-        .rpc();
+        .rpc() as Promise<string>;
     },
-    [program, publicKey]
+    [methods, publicKey]
   );
 
   const completeJob = useCallback(
-    async (jobId: number, posterPubkey: PublicKey) => {
-      if (!program || !publicKey) throw new Error("Wallet not connected");
+    async (jobId: number, posterPubkey: PublicKey): Promise<string> => {
+      if (!methods || !publicKey) throw new Error("Wallet not connected");
       const id = new BN(jobId);
       const [jobPubkey] = jobPda(posterPubkey, id);
 
-      return program.methods
+      return methods
         .completeJob(id)
         .accounts({
-          job: jobPubkey,
+          job:         jobPubkey,
           workerAgent: publicKey,
         })
-        .rpc();
+        .rpc() as Promise<string>;
     },
-    [program, publicKey]
+    [methods, publicKey]
   );
 
   const releasePayment = useCallback(
-    async (jobId: number, workerPubkey: PublicKey) => {
-      if (!program || !publicKey) throw new Error("Wallet not connected");
+    async (jobId: number, workerPubkey: PublicKey): Promise<string> => {
+      if (!methods || !publicKey) throw new Error("Wallet not connected");
       const id = new BN(jobId);
       const [jobPubkey] = jobPda(publicKey, id);
       const [escrowPubkey] = escrowPda(publicKey, id);
-      const workerAta = await getAssociatedTokenAddress(
-        USDC_MINT,
-        workerPubkey
-      );
+      const workerAta = await getAssociatedTokenAddress(USDC_MINT, workerPubkey);
 
-      return program.methods
+      return methods
         .releasePayment(id)
         .accounts({
-          job: jobPubkey,
+          job:                jobPubkey,
           escrowTokenAccount: escrowPubkey,
           workerTokenAccount: workerAta,
-          posterAgent: publicKey,
+          posterAgent:        publicKey,
         })
-        .rpc();
+        .rpc() as Promise<string>;
     },
-    [program, publicKey]
+    [methods, publicKey]
   );
 
   return { postJob, acceptJob, completeJob, releasePayment };
