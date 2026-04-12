@@ -1,0 +1,26 @@
+# Rust / Anchor
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Node
+node_modules/
+app/node_modules/
+app/dist/
+app/.vite/
+
+# Solana
+*.so
+test-ledger/
+
+# macOS
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+*.swp

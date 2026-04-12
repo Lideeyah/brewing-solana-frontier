@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Claude_Preview__preview_start",
+      "Bash(solana --version)",
+      "Bash(anchor --version)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Read(//Users/lideeyah/.local/share/solana/install/active_release/**)",
+      "Read(//Users/lideeyah/.avm/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(export PATH=\"/Users/lideeyah/.local/share/solana/install/active_release/bin:$PATH\")",
+      "Bash(solana config:*)",
+      "Bash([ ! -f ~/.config/solana/id.json ])",
+      "Bash(solana-keygen new:*)",
+      "Bash(solana address:*)",
+      "Bash(solana airdrop:*)",
+      "Bash(solana balance:*)",
+      "Bash(echo \"Balance: $\\(solana balance\\)\")",
+      "Bash(curl -s -X POST https://faucet.solana.com/api/request_sol -H 'Content-Type: application/json' -d '{\"wallet\":\"__TRACKED_VAR__\",\"amount\":2}')",
+      "Bash(curl -s https://api.devnet.solana.com -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"requestAirdrop\",\"params\":[\"__TRACKED_VAR__\",2000000000]}')",
+      "Bash(cargo install:*)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --git https://github.com/coral-xyz/avm avm --locked --force)",
+      "Bash(cargo search:*)",
+      "Bash(anchor build:*)",
+      "Bash(solana-keygen pubkey:*)",
+      "Bash(xargs sed:*)"
+    ]
+  }
+}

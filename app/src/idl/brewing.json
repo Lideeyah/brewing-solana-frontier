@@ -1,0 +1,107 @@
+{
+  "address": "BrewMktV1111111111111111111111111111111111111",
+  "metadata": {
+    "name": "brewing",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Brewing — onchain AI agent job marketplace"
+  },
+  "instructions": [
+    {
+      "name": "postJob",
+      "discriminator": [140, 116, 53, 195, 5, 172, 12, 155],
+      "accounts": [
+        { "name": "job", "writable": true, "pda": {} },
+        { "name": "escrowTokenAccount", "writable": true, "pda": {} },
+        { "name": "posterTokenAccount", "writable": true },
+        { "name": "usdcMint" },
+        { "name": "posterAgent", "writable": true, "signer": true },
+        { "name": "tokenProgram" },
+        { "name": "systemProgram" },
+        { "name": "rent" }
+      ],
+      "args": [
+        { "name": "jobId", "type": "u64" },
+        { "name": "description", "type": "string" },
+        { "name": "paymentAmount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "acceptJob",
+      "discriminator": [193, 12, 116, 175, 94, 108, 222, 50],
+      "accounts": [
+        { "name": "job", "writable": true, "pda": {} },
+        { "name": "workerAgent", "signer": true }
+      ],
+      "args": [{ "name": "jobId", "type": "u64" }]
+    },
+    {
+      "name": "completeJob",
+      "discriminator": [38, 24, 105, 23, 190, 90, 100, 13],
+      "accounts": [
+        { "name": "job", "writable": true, "pda": {} },
+        { "name": "workerAgent", "signer": true }
+      ],
+      "args": [{ "name": "jobId", "type": "u64" }]
+    },
+    {
+      "name": "releasePayment",
+      "discriminator": [106, 221, 205, 177, 64, 168, 17, 87],
+      "accounts": [
+        { "name": "job", "writable": true, "pda": {} },
+        { "name": "escrowTokenAccount", "writable": true, "pda": {} },
+        { "name": "workerTokenAccount", "writable": true },
+        { "name": "posterAgent", "writable": true, "signer": true },
+        { "name": "tokenProgram" }
+      ],
+      "args": [{ "name": "jobId", "type": "u64" }]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "jobAccount",
+      "discriminator": [148, 52, 193, 116, 211, 71, 35, 20]
+    }
+  ],
+  "types": [
+    {
+      "name": "jobAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "jobId", "type": "u64" },
+          { "name": "description", "type": "string" },
+          { "name": "paymentAmount", "type": "u64" },
+          { "name": "posterAgent", "type": "pubkey" },
+          { "name": "workerAgent", "type": "pubkey" },
+          { "name": "status", "type": { "defined": { "name": "jobStatus" } } },
+          { "name": "bump", "type": "u8" },
+          { "name": "escrowBump", "type": "u8" }
+        ]
+      }
+    },
+    {
+      "name": "jobStatus",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          { "name": "Open" },
+          { "name": "InProgress" },
+          { "name": "PendingRelease" },
+          { "name": "Completed" },
+          { "name": "Cancelled" }
+        ]
+      }
+    }
+  ],
+  "errors": [
+    { "code": 6000, "name": "DescriptionTooLong", "msg": "Job description exceeds maximum length of 512 characters" },
+    { "code": 6001, "name": "ZeroPayment", "msg": "Payment amount must be greater than zero" },
+    { "code": 6002, "name": "JobNotOpen", "msg": "Job is not in Open status" },
+    { "code": 6003, "name": "JobNotInProgress", "msg": "Job is not in InProgress status" },
+    { "code": 6004, "name": "PaymentNotPending", "msg": "Payment is not pending release" },
+    { "code": 6005, "name": "UnauthorizedWorker", "msg": "Caller is not the assigned worker" },
+    { "code": 6006, "name": "UnauthorizedPoster", "msg": "Caller is not the job poster" },
+    { "code": 6007, "name": "PosterCannotWork", "msg": "The poster cannot also be the worker" }
+  ]
+}
