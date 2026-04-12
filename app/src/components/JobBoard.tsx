@@ -54,26 +54,31 @@ function parseChainStatus(raw: Record<string, unknown>): JobStatus {
 
 // ── Map on-chain JobAccount → frontend Job ────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function chainToJob(pubkey: PublicKey, acc: any): Job {
-  const zeroKey = PublicKey.default.toBase58();
-  const workerStr = (acc.workerAgent as PublicKey).toBase58();
-  return {
-    jobId:        (acc.jobId as BN).toNumber(),
-    description:  acc.description as string,
-    paymentUsdc:  (acc.paymentAmount as BN).toNumber() / 1_000_000,
-    posterAgent:  (acc.posterAgent as PublicKey).toBase58(),
-    workerAgent:  workerStr === zeroKey ? null : workerStr,
-    status:       parseChainStatus(acc.status as Record<string, unknown>),
-    postedAt:     new Date(),
-    tag:          'On-chain',
-    _pubkey:      pubkey.toBase58(),
-  } as Job & { _pubkey: string };
+function chainToJob(pubkey: PublicKey, acc: any): Job | null {
+  try {
+    const zeroKey = PublicKey.default.toBase58();
+    const workerStr = (acc.workerAgent as PublicKey).toBase58();
+    return {
+      jobId:        (acc.jobId as BN).toNumber(),
+      description:  acc.description as string,
+      paymentUsdc:  (acc.paymentAmount as BN).toNumber() / 1_000_000,
+      posterAgent:  (acc.posterAgent as PublicKey).toBase58(),
+      workerAgent:  workerStr === zeroKey ? null : workerStr,
+      status:       parseChainStatus(acc.status as Record<string, unknown>),
+      postedAt:     new Date(),
+      tag:          'On-chain',
+      _pubkey:      pubkey.toBase58(),
+    } as Job & { _pubkey: string };
+  } catch {
+    return null; // skip malformed accounts
+  }
 }
 
 // ── Root ───────────────────────────────────────────────────────────────────────
 
 export default function JobBoard() {
-  const { publicKey } = useWallet();
+  const { publicKey } = useWallet(); // used in PostJobForm + JobDetail via useWallet()
+  void publicKey;                     // suppress unused-var — still needed by child hooks
   const program = useBrewingProgram();
 
   const [filter, setFilter]             = useState<'All' | JobStatus>('All');
@@ -95,25 +100,30 @@ export default function JobBoard() {
   }, []);
   void tick;
 
-  // ── Fetch on-chain jobs ────────────────────────────────────────────────────
+  // ── Fetch on-chain jobs (works with or without wallet) ────────────────────
   const fetchChainJobs = useCallback(async () => {
-    if (!program) { setChainJobs([]); return; }
+    if (!program) return;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const accs = await (program.account as any).jobAccount.all();
-      setChainJobs(accs.map((a: { publicKey: PublicKey; account: unknown }) =>
-        chainToJob(a.publicKey, a.account)));
+      const parsed = (accs as { publicKey: PublicKey; account: unknown }[])
+        .map(a => chainToJob(a.publicKey, a.account))
+        .filter((j): j is Job => j !== null);
+      setChainJobs(parsed);
     } catch (e) {
-      console.warn('chain fetch error', e);
+      // Silently ignore — network errors, IDL mismatches, etc.
+      // The mock data keeps the UI populated.
+      console.warn('[Brewing] chain fetch failed:', e);
     }
   }, [program]);
 
   useEffect(() => { fetchChainJobs(); }, [fetchChainJobs]);
 
-  // ── Merge jobs: chain jobs shown first when wallet connected ───────────────
-  const allJobs = publicKey
-    ? [...chainJobs, ...mockJobs.filter(m => m.jobId !== DEMO_JOB_ID || !demoBusy)]
-    : mockJobs;
+  // ── Always show both chain + mock jobs regardless of wallet state ──────────
+  const allJobs = [
+    ...chainJobs,
+    ...mockJobs.filter(m => m.jobId !== DEMO_JOB_ID || !demoBusy),
+  ];
 
   // ── Live activity feed ─────────────────────────────────────────────────────
   const pushEvent = useCallback((ev: ActivityEvent) => {

@@ -123,12 +123,6 @@
       "discriminator": [91, 16, 162, 5, 45, 210, 125, 65]
     }
   ],
-  "events": [
-    { "name": "JobAccepted",     "discriminator": [47, 54, 152, 59, 118, 195, 251, 114] },
-    { "name": "JobCompleted",    "discriminator": [176, 207, 246, 115, 95, 179, 9, 132] },
-    { "name": "JobPosted",       "discriminator": [18, 171, 12, 141, 212, 169, 183, 52] },
-    { "name": "PaymentReleased", "discriminator": [160, 132, 155, 232, 46, 254, 69, 219] }
-  ],
   "errors": [
     { "code": 6000, "name": "DescriptionTooLong",  "msg": "Job description exceeds maximum length of 512 characters" },
     { "code": 6001, "name": "ZeroPayment",         "msg": "Payment amount must be greater than zero" },

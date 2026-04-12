@@ -22,7 +22,8 @@
     "chai": "^4.4.1",
     "mocha": "^10.3.0",
     "ts-mocha": "^10.0.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vite-plugin-node-polyfills": "^0.26.0"
   },
   "workspaces": [
     "app",
