@@ -1,12 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { PublicKey } from '@solana/web3.js';
 import BN from 'bn.js';
 import {
-  MOCK_JOBS,
   MOCK_ACTIVITY,
-  MOCK_STATS,
   LIVE_POOL,
   DEMO_JOB_ID,
   DEMO_POSTER,
@@ -84,8 +82,9 @@ export default function JobBoard() {
   const [filter, setFilter]             = useState<'All' | JobStatus>('All');
   const [selectedJob, setSelectedJob]   = useState<Job | null>(null);
   const [showPostForm, setShowPostForm] = useState(false);
-  const [mockJobs, setMockJobs]         = useState<Job[]>(MOCK_JOBS);
+  const [demoJobs, setDemoJobs]         = useState<Job[]>([]);
   const [chainJobs, setChainJobs]       = useState<Job[]>([]);
+  const [chainLoading, setChainLoading] = useState(true);
   const [feedEvents, setFeedEvents]     = useState<ActivityEvent[]>(MOCK_ACTIVITY);
   const [tick, setTick]                 = useState(0);
   const [demoStep, setDemoStep]         = useState(0);
@@ -102,7 +101,7 @@ export default function JobBoard() {
 
   // ── Fetch on-chain jobs (works with or without wallet) ────────────────────
   const fetchChainJobs = useCallback(async () => {
-    if (!program) return;
+    if (!program) { setChainLoading(false); return; }
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const accs = await (program.account as any).jobAccount.all();
@@ -111,19 +110,43 @@ export default function JobBoard() {
         .filter((j): j is Job => j !== null);
       setChainJobs(parsed);
     } catch (e) {
-      // Silently ignore — network errors, IDL mismatches, etc.
-      // The mock data keeps the UI populated.
       console.warn('[Brewing] chain fetch failed:', e);
+    } finally {
+      setChainLoading(false);
     }
   }, [program]);
 
-  useEffect(() => { fetchChainJobs(); }, [fetchChainJobs]);
+  useEffect(() => {
+    fetchChainJobs();
+    const id = setInterval(fetchChainJobs, 15_000);
+    return () => clearInterval(id);
+  }, [fetchChainJobs]);
 
-  // ── Always show both chain + mock jobs regardless of wallet state ──────────
-  const allJobs = [
-    ...chainJobs,
-    ...mockJobs.filter(m => m.jobId !== DEMO_JOB_ID || !demoBusy),
-  ];
+  // ── Compute stats from real chain data ────────────────────────────────────
+  const stats = useMemo(() => {
+    const completed = chainJobs.filter(j => j.status === 'Completed');
+    const inProgress = chainJobs.filter(j => j.status === 'InProgress');
+    const open = chainJobs.filter(j => j.status === 'Open');
+    const agents = new Set([
+      ...chainJobs.map(j => j.posterAgent),
+      ...chainJobs.flatMap(j => j.workerAgent ? [j.workerAgent] : []),
+    ]);
+    const totalUsdc = chainJobs.reduce((s, j) => s + j.paymentUsdc, 0);
+    return {
+      totalJobs: chainJobs.length,
+      openJobs: open.length,
+      activeJobs: inProgress.length,
+      usdcSettled: completed.reduce((s, j) => s + j.paymentUsdc, 0),
+      activeAgents: agents.size,
+      avgPayment: chainJobs.length > 0 ? Math.round(totalUsdc / chainJobs.length) : 0,
+      successRate: chainJobs.length > 0
+        ? +((completed.length / chainJobs.length) * 100).toFixed(1)
+        : 0,
+    };
+  }, [chainJobs]);
+
+  // ── allJobs = real chain jobs + demo-overlay jobs (no mock jobs) ──────────
+  const allJobs = [...chainJobs, ...demoJobs];
 
   // ── Live activity feed ─────────────────────────────────────────────────────
   const pushEvent = useCallback((ev: ActivityEvent) => {
@@ -157,30 +180,30 @@ export default function JobBoard() {
     setFilter('All');
     setSelectedJob(null);
     setShowPostForm(false);
-    setMockJobs(prev => prev.filter(j => j.jobId !== DEMO_JOB_ID));
+    setDemoJobs(prev => prev.filter(j => j.jobId !== DEMO_JOB_ID));
 
     setDemoStep(1);
-    setMockJobs(prev => [DEMO_JOB_OPEN, ...prev]);
+    setDemoJobs(prev => [DEMO_JOB_OPEN, ...prev]);
     pushEvent({ id: `d-post-${Date.now()}`, type: 'JobPosted', jobId: DEMO_JOB_ID, actor: DEMO_POSTER, amount: 0.10, secondsAgo: 0, txSig: 'DmXp1KrT3nWqN8xVbYcA4sL6uHdLuEiGjOw9Pv2e' });
 
     setTimeout(() => {
       setDemoStep(2);
-      setMockJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'InProgress' as JobStatus, workerAgent: DEMO_WORKER, acceptedAt: new Date() } : j));
+      setDemoJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'InProgress' as JobStatus, workerAgent: DEMO_WORKER, acceptedAt: new Date() } : j));
       pushEvent({ id: `d-acc-${Date.now()}`, type: 'JobAccepted', jobId: DEMO_JOB_ID, actor: DEMO_WORKER, secondsAgo: 0, txSig: 'DmYq2LsU4oXrO9yWcZdB5tM7vIeGjPx1Qw3f' });
 
       setTimeout(() => {
         setDemoStep(3);
-        setMockJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'PendingRelease' as JobStatus, completedAt: new Date() } : j));
+        setDemoJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'PendingRelease' as JobStatus, completedAt: new Date() } : j));
         pushEvent({ id: `d-cmp-${Date.now()}`, type: 'JobCompleted', jobId: DEMO_JOB_ID, actor: DEMO_WORKER, secondsAgo: 0, txSig: 'DmZr3MtV5pYsP0zXdAeC6uN8wJfHkQy2Rx4g' });
 
         setTimeout(() => {
           setDemoStep(4);
-          setMockJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'Completed' as JobStatus } : j));
+          setDemoJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'Completed' as JobStatus } : j));
           pushEvent({ id: `d-rel-${Date.now()}`, type: 'PaymentReleased', jobId: DEMO_JOB_ID, actor: DEMO_POSTER, counterparty: DEMO_WORKER, amount: 0.10, secondsAgo: 0, txSig: 'DmAs4NuW6qZtQ1aYeBfD7vO9xKgIlRz3Sy5h' });
 
           setTimeout(() => {
             setDemoStep(5);
-            setTimeout(() => { setDemoStep(0); setDemoBusy(false); }, 3000);
+            setTimeout(() => { setDemoStep(0); setDemoBusy(false); setDemoJobs([]); }, 3000);
           }, 2500);
         }, 2500);
       }, 2500);
@@ -193,7 +216,7 @@ export default function JobBoard() {
     <div style={s.shell}>
       {toast && <Toast msg={toast.msg} sig={toast.sig} err={toast.err} />}
       <Header onPost={() => { setShowPostForm(v => !v); setSelectedJob(null); }} onDemo={runDemo} demoBusy={demoBusy} demoStep={demoStep} />
-      <StatsBar chainCount={chainJobs.length} />
+      <StatsBar stats={stats} chainCount={chainJobs.length} />
       <div style={s.body}>
         <div style={s.leftCol}>
           <FilterBar active={filter} onChange={f => { setFilter(f); setSelectedJob(null); }} jobs={allJobs} />
@@ -209,9 +232,36 @@ export default function JobBoard() {
             />
           )}
           <div style={s.jobList}>
+            {chainLoading && chainJobs.length === 0 && (
+              [0, 1, 2].map(i => (
+                <div key={i} style={{ ...s.jobCard, opacity: 0.4, pointerEvents: 'none' }}>
+                  <div style={{ ...s.jobCardTop }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ width: 48, height: 12, borderRadius: 3, background: 'var(--border-mid)' }} />
+                      <div style={{ width: 56, height: 12, borderRadius: 3, background: 'var(--border)' }} />
+                    </div>
+                    <div style={{ width: 52, height: 12, borderRadius: 3, background: 'var(--border)' }} />
+                  </div>
+                  <div style={{ height: 12, borderRadius: 3, background: 'var(--border)', marginBottom: 6 }} />
+                  <div style={{ height: 12, borderRadius: 3, background: 'var(--border)', width: '75%', marginBottom: 10 }} />
+                  <div style={{ ...s.jobCardBottom }}>
+                    <div style={{ width: 80, height: 11, borderRadius: 3, background: 'var(--border)' }} />
+                    <div style={{ width: 44, height: 16, borderRadius: 3, background: 'var(--border)' }} />
+                  </div>
+                </div>
+              ))
+            )}
+            {!chainLoading && chainJobs.length === 0 && demoJobs.length === 0 && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, padding: 40 }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.16em', color: 'var(--text-muted)' }}>NO JOBS ON-CHAIN YET</span>
+                <p style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', maxWidth: 280, lineHeight: 1.6 }}>
+                  Be the first to post a job. Connect your wallet and click <span style={{ color: '#F59E0B' }}>+ Post Job</span>.
+                </p>
+              </div>
+            )}
             {filtered.map(job => (
               <JobCard
-                key={`${job.jobId}-${(job as Job & { _pubkey?: string })._pubkey ?? 'mock'}`}
+                key={`${job.jobId}-${(job as Job & { _pubkey?: string })._pubkey ?? 'demo'}`}
                 job={job}
                 selected={selectedJob?.jobId === job.jobId}
                 isDemo={job.jobId === DEMO_JOB_ID && demoBusy}
@@ -297,21 +347,33 @@ function Spinner({ size = 10 }: { size?: number }) {
 
 // ── Stats bar ──────────────────────────────────────────────────────────────────
 
-function StatsBar({ chainCount }: { chainCount: number }) {
-  const st = MOCK_STATS;
+type StatsShape = {
+  totalJobs: number;
+  openJobs: number;
+  activeJobs: number;
+  usdcSettled: number;
+  activeAgents: number;
+  avgPayment: number;
+  successRate: number;
+};
+
+function StatsBar({ stats, chainCount }: { stats: StatsShape; chainCount: number }) {
+  const usdcDisplay = stats.usdcSettled >= 1000
+    ? `$${(stats.usdcSettled / 1000).toFixed(1)}k`
+    : `$${stats.usdcSettled}`;
   return (
     <div style={s.statsBar}>
-      <Stat label="Total Jobs"    value={(st.totalJobs + chainCount).toLocaleString()} />
+      <Stat label="Total Jobs"    value={stats.totalJobs.toLocaleString()} />
       <StatDiv />
-      <Stat label="USDC Settled"  value={`$${(st.usdcSettled / 1000).toFixed(1)}k`} accent />
+      <Stat label="USDC Settled"  value={usdcDisplay} accent />
       <StatDiv />
-      <Stat label="Active Agents" value={st.activeAgents.toString()} />
+      <Stat label="Active Agents" value={stats.activeAgents.toString()} />
       <StatDiv />
-      <Stat label="Open"          value={st.openJobs.toString()} />
+      <Stat label="Open"          value={stats.openJobs.toString()} />
       <StatDiv />
-      <Stat label="In Progress"   value={st.activeJobs.toString()} />
+      <Stat label="In Progress"   value={stats.activeJobs.toString()} />
       <StatDiv />
-      <Stat label="Avg Payment"   value={`$${st.avgPayment}`} />
+      <Stat label="Avg Payment"   value={`$${stats.avgPayment}`} />
       <StatDiv />
       <Stat label="On-chain"      value={chainCount.toString()} accent={chainCount > 0} />
     </div>
