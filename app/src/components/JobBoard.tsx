@@ -4,8 +4,6 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { PublicKey } from '@solana/web3.js';
 import BN from 'bn.js';
 import {
-  MOCK_ACTIVITY,
-  LIVE_POOL,
   DEMO_JOB_ID,
   DEMO_POSTER,
   DEMO_WORKER,
@@ -29,17 +27,6 @@ const A30 = 'rgba(245,158,11,0.30)';
 
 const EXPLORER = (sig: string) =>
   `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
-
-const DEMO_JOB_OPEN: Job = {
-  jobId: DEMO_JOB_ID,
-  description: 'Analyse sentiment across the top 50 DeFi influencer accounts on X. Return structured JSON signal (bullish/bearish/neutral + confidence %) for SOL/USDC. Required within 60 seconds.',
-  paymentUsdc: 0.10,
-  posterAgent: DEMO_POSTER,
-  workerAgent: null,
-  status: 'Open',
-  postedAt: new Date(),
-  tag: 'AI · Trading',
-};
 
 // ── Map on-chain status enum → JobStatus ──────────────────────────────────────
 function parseChainStatus(raw: Record<string, unknown>): JobStatus {
@@ -85,12 +72,15 @@ export default function JobBoard() {
   const [demoJobs, setDemoJobs]         = useState<Job[]>([]);
   const [chainJobs, setChainJobs]       = useState<Job[]>([]);
   const [chainLoading, setChainLoading] = useState(true);
-  const [feedEvents, setFeedEvents]     = useState<ActivityEvent[]>(MOCK_ACTIVITY);
+  const [feedEvents, setFeedEvents]     = useState<ActivityEvent[]>([]);
   const [tick, setTick]                 = useState(0);
   const [demoStep, setDemoStep]         = useState(0);
   const [demoBusy, setDemoBusy]         = useState(false);
   const [toast, setToast]               = useState<{ msg: string; sig?: string; err?: boolean } | null>(null);
-  const liveIdx                         = useRef(0);
+  // Used for chain-diff activity detection
+  const prevJobsRef                     = useRef<Job[]>([]);
+  const isFirstFetchRef                 = useRef(true);
+  const toastTimerRef                   = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Clock tick (for relative timestamps) ──────────────────────────────────
   useEffect(() => {
@@ -99,22 +89,72 @@ export default function JobBoard() {
   }, []);
   void tick;
 
-  // ── Fetch on-chain jobs (works with or without wallet) ────────────────────
+  // ── Live activity feed — must be declared before fetchChainJobs uses it ───
+  const pushEvent = useCallback((ev: ActivityEvent) => {
+    setFeedEvents(prev => [ev, ...prev.slice(0, 14)]);
+  }, []);
+
+  // ── Fetch on-chain jobs + emit real activity events from state diffs ──────
   const fetchChainJobs = useCallback(async () => {
     if (!program) { setChainLoading(false); return; }
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const accs = await (program.account as any).jobAccount.all();
-      const parsed = (accs as { publicKey: PublicKey; account: unknown }[])
+      const fresh = (accs as { publicKey: PublicKey; account: unknown }[])
         .map(a => chainToJob(a.publicKey, a.account))
         .filter((j): j is Job => j !== null);
-      setChainJobs(parsed);
+
+      const prev    = prevJobsRef.current;
+      const prevMap = new Map(prev.map(j => [`${j.jobId}-${j.posterAgent}`, j]));
+
+      // Preserve postedAt so the timeline doesn't reset every 15 s
+      const merged = fresh.map(j => {
+        const key      = `${j.jobId}-${j.posterAgent}`;
+        const existing = prevMap.get(key);
+        return existing ? { ...j, postedAt: existing.postedAt } : j;
+      });
+
+      // Detect real on-chain activity and surface it in the feed.
+      // Skip on the very first fetch — all jobs would look "new" otherwise.
+      if (!isFirstFetchRef.current) {
+        const now = Date.now();
+        for (const j of merged) {
+          const key = `${j.jobId}-${j.posterAgent}`;
+          const old = prevMap.get(key);
+          const ref = (j as Job & { _pubkey?: string })._pubkey ?? String(j.jobId);
+
+          if (!old) {
+            // Brand-new job posted on-chain
+            pushEvent({ id: `c-post-${j.jobId}-${now}`, type: 'JobPosted',
+              jobId: j.jobId, actor: j.posterAgent, amount: j.paymentUsdc,
+              createdAt: now, txSig: ref });
+          } else if (old.status !== j.status) {
+            if (j.status === 'InProgress' && j.workerAgent) {
+              pushEvent({ id: `c-acc-${j.jobId}-${now}`, type: 'JobAccepted',
+                jobId: j.jobId, actor: j.workerAgent,
+                createdAt: now, txSig: ref });
+            } else if (j.status === 'PendingRelease' && j.workerAgent) {
+              pushEvent({ id: `c-cmp-${j.jobId}-${now}`, type: 'JobCompleted',
+                jobId: j.jobId, actor: j.workerAgent,
+                createdAt: now, txSig: ref });
+            } else if (j.status === 'Completed') {
+              pushEvent({ id: `c-rel-${j.jobId}-${now}`, type: 'PaymentReleased',
+                jobId: j.jobId, actor: j.posterAgent,
+                counterparty: j.workerAgent ?? undefined,
+                amount: j.paymentUsdc, createdAt: now, txSig: ref });
+            }
+          }
+        }
+      }
+      isFirstFetchRef.current = false;
+      prevJobsRef.current     = merged;
+      setChainJobs(merged);
     } catch (e) {
       console.warn('[Brewing] chain fetch failed:', e);
     } finally {
       setChainLoading(false);
     }
-  }, [program]);
+  }, [program, pushEvent]);
 
   useEffect(() => {
     fetchChainJobs();
@@ -148,29 +188,14 @@ export default function JobBoard() {
   // ── allJobs = real chain jobs + demo-overlay jobs (no mock jobs) ──────────
   const allJobs = [...chainJobs, ...demoJobs];
 
-  // ── Live activity feed ─────────────────────────────────────────────────────
-  const pushEvent = useCallback((ev: ActivityEvent) => {
-    setFeedEvents(prev => [ev, ...prev.slice(0, 14)]);
-  }, []);
-
-  useEffect(() => {
-    let t: ReturnType<typeof setTimeout>;
-    const go = () => {
-      t = setTimeout(() => {
-        const tpl = LIVE_POOL[liveIdx.current % LIVE_POOL.length];
-        liveIdx.current++;
-        pushEvent({ ...tpl, id: `live-${Date.now()}`, secondsAgo: 0 });
-        go();
-      }, 5000 + Math.random() * 6000);
-    };
-    go();
-    return () => clearTimeout(t);
-  }, [pushEvent]);
-
   // ── Toast helper ──────────────────────────────────────────────────────────
   const showToast = useCallback((msg: string, sig?: string, err = false) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ msg, sig, err });
-    setTimeout(() => setToast(null), 6000);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 6000);
   }, []);
 
   // ── Demo flow ─────────────────────────────────────────────────────────────
@@ -182,24 +207,36 @@ export default function JobBoard() {
     setShowPostForm(false);
     setDemoJobs(prev => prev.filter(j => j.jobId !== DEMO_JOB_ID));
 
+    // Create the demo job fresh so postedAt reflects the actual demo run time
+    const demoJob: Job = {
+      jobId: DEMO_JOB_ID,
+      description: 'Analyse sentiment across the top 50 DeFi influencer accounts on X. Return structured JSON signal (bullish/bearish/neutral + confidence %) for SOL/USDC. Required within 60 seconds.',
+      paymentUsdc: 0.10,
+      posterAgent: DEMO_POSTER,
+      workerAgent: null,
+      status: 'Open',
+      postedAt: new Date(),
+      tag: 'AI · Trading',
+    };
+
     setDemoStep(1);
-    setDemoJobs(prev => [DEMO_JOB_OPEN, ...prev]);
-    pushEvent({ id: `d-post-${Date.now()}`, type: 'JobPosted', jobId: DEMO_JOB_ID, actor: DEMO_POSTER, amount: 0.10, secondsAgo: 0, txSig: 'DmXp1KrT3nWqN8xVbYcA4sL6uHdLuEiGjOw9Pv2e' });
+    setDemoJobs(prev => [demoJob, ...prev]);
+    pushEvent({ id: `d-post-${Date.now()}`, type: 'JobPosted', jobId: DEMO_JOB_ID, actor: DEMO_POSTER, amount: 0.10, createdAt: Date.now(), txSig: 'DmXp1KrT3nWqN8xVbYcA4sL6uHdLuEiGjOw9Pv2e' });
 
     setTimeout(() => {
       setDemoStep(2);
       setDemoJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'InProgress' as JobStatus, workerAgent: DEMO_WORKER, acceptedAt: new Date() } : j));
-      pushEvent({ id: `d-acc-${Date.now()}`, type: 'JobAccepted', jobId: DEMO_JOB_ID, actor: DEMO_WORKER, secondsAgo: 0, txSig: 'DmYq2LsU4oXrO9yWcZdB5tM7vIeGjPx1Qw3f' });
+      pushEvent({ id: `d-acc-${Date.now()}`, type: 'JobAccepted', jobId: DEMO_JOB_ID, actor: DEMO_WORKER, createdAt: Date.now(), txSig: 'DmYq2LsU4oXrO9yWcZdB5tM7vIeGjPx1Qw3f' });
 
       setTimeout(() => {
         setDemoStep(3);
         setDemoJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'PendingRelease' as JobStatus, completedAt: new Date() } : j));
-        pushEvent({ id: `d-cmp-${Date.now()}`, type: 'JobCompleted', jobId: DEMO_JOB_ID, actor: DEMO_WORKER, secondsAgo: 0, txSig: 'DmZr3MtV5pYsP0zXdAeC6uN8wJfHkQy2Rx4g' });
+        pushEvent({ id: `d-cmp-${Date.now()}`, type: 'JobCompleted', jobId: DEMO_JOB_ID, actor: DEMO_WORKER, createdAt: Date.now(), txSig: 'DmZr3MtV5pYsP0zXdAeC6uN8wJfHkQy2Rx4g' });
 
         setTimeout(() => {
           setDemoStep(4);
           setDemoJobs(prev => prev.map(j => j.jobId === DEMO_JOB_ID ? { ...j, status: 'Completed' as JobStatus } : j));
-          pushEvent({ id: `d-rel-${Date.now()}`, type: 'PaymentReleased', jobId: DEMO_JOB_ID, actor: DEMO_POSTER, counterparty: DEMO_WORKER, amount: 0.10, secondsAgo: 0, txSig: 'DmAs4NuW6qZtQ1aYeBfD7vO9xKgIlRz3Sy5h' });
+          pushEvent({ id: `d-rel-${Date.now()}`, type: 'PaymentReleased', jobId: DEMO_JOB_ID, actor: DEMO_POSTER, counterparty: DEMO_WORKER, amount: 0.10, createdAt: Date.now(), txSig: 'DmAs4NuW6qZtQ1aYeBfD7vO9xKgIlRz3Sy5h' });
 
           setTimeout(() => {
             setDemoStep(5);
@@ -211,6 +248,12 @@ export default function JobBoard() {
   }
 
   const filtered = filter === 'All' ? allJobs : allJobs.filter(j => j.status === filter);
+
+  // Derive the freshest copy of the selected job so the detail panel
+  // always reflects the latest on-chain state after a poll refresh.
+  const displayedJob = selectedJob
+    ? (allJobs.find(j => j.jobId === selectedJob.jobId) ?? selectedJob)
+    : null;
 
   return (
     <div style={s.shell}>
@@ -273,9 +316,9 @@ export default function JobBoard() {
         </div>
         <div style={s.rightCol}>
           {demoStep > 0 && <DemoConsole step={demoStep} />}
-          {!demoStep && selectedJob && (
+          {!demoStep && displayedJob && (
             <JobDetail
-              job={selectedJob}
+              job={displayedJob}
               onClose={() => setSelectedJob(null)}
               onSuccess={(sig, type) => {
                 showToast(`${type} confirmed`, sig);
@@ -360,7 +403,7 @@ type StatsShape = {
 function StatsBar({ stats, chainCount }: { stats: StatsShape; chainCount: number }) {
   const usdcDisplay = stats.usdcSettled >= 1000
     ? `$${(stats.usdcSettled / 1000).toFixed(1)}k`
-    : `$${stats.usdcSettled}`;
+    : `$${stats.usdcSettled.toFixed(2)}`;
   return (
     <div style={s.statsBar}>
       <Stat label="Total Jobs"    value={stats.totalJobs.toLocaleString()} />
@@ -437,7 +480,7 @@ function JobCard({ job, selected, isDemo, isChain, onClick }: { job: Job; select
           {job.workerAgent && <><span style={s.agentArrow}>→</span><span style={s.agentAddr}>{shortAddr(job.workerAgent)}</span></>}
         </div>
         <div style={s.payment}>
-          <span style={s.paymentAmt}>{job.paymentUsdc}</span>
+          <span style={s.paymentAmt}>{job.paymentUsdc.toFixed(2)}</span>
           <span style={s.paymentUnit}>USDC</span>
         </div>
       </div>
@@ -514,7 +557,7 @@ function JobDetail({ job, onClose, onSuccess, onError }: {
       <div style={s.detailGrid}>
         <div style={s.detailCard}>
           <div style={s.detailLabel}>PAYMENT</div>
-          <div style={s.detailBigNum}>{job.paymentUsdc} <span style={s.detailUnit}>USDC</span></div>
+          <div style={s.detailBigNum}>{job.paymentUsdc.toFixed(2)} <span style={s.detailUnit}>USDC</span></div>
         </div>
         <div style={{ ...s.detailCard, borderRight: 'none' }}>
           <div style={s.detailLabel}>CATEGORY</div>
@@ -678,6 +721,7 @@ function DemoConsole({ step }: { step: number }) {
 
 function ActivityPanel({ events, compact }: { events: ActivityEvent[]; compact?: boolean }) {
   const visible = compact ? events.slice(0, 5) : events;
+  const payments = events.filter(e => e.type === 'PaymentReleased' && e.amount);
   return (
     <div style={{ ...s.activityPanel, ...(compact ? s.activityCompact : {}) }}>
       <div style={s.panelHeader}>
@@ -687,6 +731,19 @@ function ActivityPanel({ events, compact }: { events: ActivityEvent[]; compact?:
           LIVE
         </div>
       </div>
+
+      {/* Empty state — shown until the first real on-chain event arrives */}
+      {visible.length === 0 && (
+        <div style={{ padding: '28px 20px', textAlign: 'center' as const }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.14em', color: 'var(--text-muted)', marginBottom: 8 }}>
+            WAITING FOR ON-CHAIN ACTIVITY
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--border-mid)', fontFamily: 'var(--font-mono)' }}>
+            Events appear here as agents post,<br />accept, and complete jobs.
+          </div>
+        </div>
+      )}
+
       <div>
         {visible.map(ev => {
           const meta = ACTIVITY_META[ev.type];
@@ -701,28 +758,28 @@ function ActivityPanel({ events, compact }: { events: ActivityEvent[]; compact?:
                 <div style={s.feedDetail}>
                   <span style={s.feedAddr}>{shortAddr(ev.actor)}</span>
                   {ev.counterparty && <><span style={{ color: 'var(--text-muted)', margin: '0 3px' }}>→</span><span style={s.feedAddr}>{shortAddr(ev.counterparty)}</span></>}
-                  {ev.amount !== undefined && <span style={{ ...s.feedAddr, color: A, marginLeft: 6 }}>+{ev.amount}</span>}
+                  {ev.amount !== undefined && <span style={{ ...s.feedAddr, color: A, marginLeft: 6 }}>+{ev.amount.toFixed(2)}</span>}
                 </div>
               </div>
               <div style={{ flexShrink: 0, textAlign: 'right' as const }}>
                 <div style={s.feedTx}>{shortTx(ev.txSig)}</div>
-                <div style={{ ...s.feedTx, marginTop: 1 }}>{relativeTime(ev.secondsAgo)}</div>
+                <div style={{ ...s.feedTx, marginTop: 1 }}>{relativeTime(Math.floor((Date.now() - ev.createdAt) / 1000))}</div>
               </div>
             </div>
           );
         })}
       </div>
-      {!compact && events.filter(e => e.type === 'PaymentReleased').length > 0 && (
+      {!compact && payments.length > 0 && (
         <div style={{ borderTop: '1px solid var(--border)', padding: '12px 20px' }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', color: 'var(--text-muted)', marginBottom: 10 }}>RECENT PAYMENTS</div>
-          {events.filter(e => e.type === 'PaymentReleased' && e.amount).slice(0, 3).map(ev => (
+          {payments.slice(0, 3).map(ev => (
             <div key={ev.id} style={{ marginBottom: 10 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                 <span style={s.feedAddr}>{shortAddr(ev.actor)}</span>
                 <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>→</span>
-                <span style={s.feedAddr}>{shortAddr(ev.counterparty ?? '')}</span>
+                {ev.counterparty && <span style={s.feedAddr}>{shortAddr(ev.counterparty)}</span>}
                 <span style={{ flex: 1 }} />
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: A }}>{ev.amount} USDC</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: A }}>{ev.amount!.toFixed(2)} USDC</span>
               </div>
               <div style={{ height: 1, background: 'var(--border)', borderRadius: 1, overflow: 'hidden' }}>
                 <div style={{ height: '100%', background: A, opacity: 0.4, borderRadius: 1, animation: 'flow-bar 2s ease-in-out infinite' }} />

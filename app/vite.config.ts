@@ -18,4 +18,22 @@ export default defineConfig({
   define: {
     "process.env": {},
   },
+  build: {
+    chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Solana + Anchor in their own chunk (largest dependency)
+          solana: ["@solana/web3.js", "@coral-xyz/anchor", "@solana/spl-token"],
+          // Wallet adapter UI separately
+          wallet: [
+            "@solana/wallet-adapter-react",
+            "@solana/wallet-adapter-react-ui",
+            "@solana/wallet-adapter-wallets",
+            "@solana/wallet-adapter-base",
+          ],
+        },
+      },
+    },
+  },
 });
