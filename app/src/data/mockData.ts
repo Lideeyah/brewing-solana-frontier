@@ -31,7 +31,7 @@ export interface ActivityEvent {
   actor: string;
   counterparty?: string;
   amount?: number;
-  secondsAgo: number;
+  createdAt: number;   // ms timestamp — compute secondsAgo at render time so it stays live
   txSig: string;
 }
 
@@ -47,7 +47,8 @@ const AGENTS = {
 };
 
 const NOW = new Date();
-const ago = (s: number) => new Date(NOW.getTime() - s * 1000);
+const NOW_MS = NOW.getTime();
+const ago = (s: number) => new Date(NOW_MS - s * 1000);
 
 // ── Mock jobs ─────────────────────────────────────────────────────────────────
 
@@ -154,7 +155,7 @@ export const MOCK_ACTIVITY: ActivityEvent[] = [
     actor: AGENTS.DELTA,
     counterparty: AGENTS.GAMMA,
     amount: 180,
-    secondsAgo: 8,
+    createdAt: NOW_MS - 8 * 1000,
     txSig: '5KkzNpQrWx7VbYcT2sA9fHdLuEiGjO3wPvXe6ZrMs1nP4aR8mK',
   },
   {
@@ -162,7 +163,7 @@ export const MOCK_ACTIVITY: ActivityEvent[] = [
     type: 'JobCompleted',
     jobId: 47,
     actor: AGENTS.BETA,
-    secondsAgo: 302,
+    createdAt: NOW_MS - 302 * 1000,
     txSig: '3Zp1mKrWqN8xVbYcT4sA6fHdLuEiGjOw9nPvXe2ZrMs7bQ5aK',
   },
   {
@@ -171,7 +172,7 @@ export const MOCK_ACTIVITY: ActivityEvent[] = [
     jobId: 51,
     actor: AGENTS.ALPHA,
     amount: 75,
-    secondsAgo: 45,
+    createdAt: NOW_MS - 45 * 1000,
     txSig: 'Jx2bK7nWpRmQ3vBcYeT5sL9uHdEiGj4wPvNe1ZrAqO8cM6aP',
   },
   {
@@ -179,7 +180,7 @@ export const MOCK_ACTIVITY: ActivityEvent[] = [
     type: 'JobAccepted',
     jobId: 48,
     actor: AGENTS.EPSILON,
-    secondsAgo: 400,
+    createdAt: NOW_MS - 400 * 1000,
     txSig: 'mN5aK9nWpXrR6vBcYeT3sL7uHdEiGjO2wPvNe4ZrAq1dN8bQ',
   },
   {
@@ -188,7 +189,7 @@ export const MOCK_ACTIVITY: ActivityEvent[] = [
     jobId: 50,
     actor: AGENTS.BETA,
     amount: 40,
-    secondsAgo: 120,
+    createdAt: NOW_MS - 120 * 1000,
     txSig: 'pR8bK2nWqXmN7vBcYeT1sL5uHdEiGj9wPvNe6ZrAqO3eL4cR',
   },
   {
@@ -196,7 +197,7 @@ export const MOCK_ACTIVITY: ActivityEvent[] = [
     type: 'JobAccepted',
     jobId: 49,
     actor: AGENTS.DELTA,
-    secondsAgo: 720,
+    createdAt: NOW_MS - 720 * 1000,
     txSig: 'fQ7aK3nWpXmR2vBcYeT9sL4uHdEiGjO1wPvNe8ZrAq5gM2bW',
   },
   {
@@ -206,7 +207,7 @@ export const MOCK_ACTIVITY: ActivityEvent[] = [
     actor: AGENTS.EPSILON,
     counterparty: AGENTS.ALPHA,
     amount: 90,
-    secondsAgo: 100002,
+    createdAt: NOW_MS - 100002 * 1000,
     txSig: '8Kz4mNpRqW7xVbYcT2sA9fHdLuEiGjOw3nPvXe6ZrMs5hN3cT',
   },
 ];
@@ -258,7 +259,7 @@ export const ACTIVITY_META: Record<ActivityType, { label: string; icon: string }
 
 // ── Live event pool — cycles through these to simulate marketplace activity ──
 
-export const LIVE_POOL: Omit<ActivityEvent, 'id' | 'secondsAgo'>[] = [
+export const LIVE_POOL: Omit<ActivityEvent, 'id' | 'createdAt'>[] = [
   { type: 'JobPosted',       jobId: 52, actor: AGENTS.ZETA,    amount: 200,
     txSig: 'Rq7xVbYcT2sA9pZ1mKrWqN8fHdLuEiGjOw4nPvX' },
   { type: 'JobAccepted',     jobId: 52, actor: AGENTS.ALPHA,

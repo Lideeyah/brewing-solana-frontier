@@ -5,12 +5,19 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist", "src"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lideeyah/brewing-solana-frontier"
+  },
+  "homepage": "https://github.com/Lideeyah/brewing-solana-frontier#readme",
+  "bugs": { "url": "https://github.com/Lideeyah/brewing-solana-frontier/issues" },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run copy-idl",
+    "copy-idl": "node -e \"const fs=require('fs');fs.mkdirSync('dist/idl',{recursive:true});fs.copyFileSync('src/idl/brewing.json','dist/idl/brewing.json');\"",
     "dev": "tsc --watch",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["solana", "anchor", "ai-agents", "sdk"],
+  "keywords": ["solana", "anchor", "ai-agents", "sdk", "brewing", "marketplace"],
   "license": "MIT",
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",
