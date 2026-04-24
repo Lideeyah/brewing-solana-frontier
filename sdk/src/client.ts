@@ -13,10 +13,12 @@ import type {
   Job,
   JobStatus,
   PostJobResult,
+  PostJobOptions,
   ActionResult,
   SubmitWorkResult,
   WalletAdapter,
 } from "./types";
+import { encodeDescription, decodeDescription } from "./types";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const IDL = require("./idl/brewing.json");
 
@@ -100,20 +102,28 @@ export class BrewingClient {
   // ── postJob ─────────────────────────────────────────────────────────────────
   /**
    * Post a new job and lock USDC in escrow immediately.
-   * @param description  What the worker agent must deliver (max 512 chars)
-   * @param paymentAmount  Amount in USDC (e.g. 50 = 50 USDC)
-   * @param jobId  Optional explicit job ID — auto-generated from timestamp if omitted
+   *
+   * @param description   What the worker agent must deliver (max 512 chars,
+   *                      excluding the auto-added capability prefix)
+   * @param paymentAmount Amount in USDC (e.g. 0.10)
+   * @param options       Optional: `{ jobId?, capability? }`
+   *
+   * @example
+   * // Post a research job — workers filtering by capability:"research" will see it
+   * await client.postJob("Summarise DeFi trading risks", 0.10, { capability: "research" });
    */
   async postJob(
     description: string,
     paymentAmount: number,
-    jobId?: number
+    options?: PostJobOptions
   ): Promise<PostJobResult> {
     if (!description.trim()) throw new Error("description is required");
     if (paymentAmount <= 0)  throw new Error("paymentAmount must be > 0");
-    if (description.length > 512) throw new Error("description exceeds 512 chars");
 
-    const id = jobId ?? Math.floor(Date.now() / 1000) % 100_000;
+    const encoded = encodeDescription(description.trim(), options?.capability);
+    if (encoded.length > 512) throw new Error("encoded description exceeds 512 chars");
+
+    const id = options?.jobId ?? Math.floor(Date.now() / 1000) % 100_000;
     const bnId = new BN(id);
     const poster = this.wallet.publicKey;
     const [jobPubkey] = jobPda(poster, bnId);
@@ -122,7 +132,7 @@ export class BrewingClient {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const txSig: string = await (this.program as any).methods
-      .postJob(bnId, description.trim(), new BN(Math.round(paymentAmount * 1_000_000)))
+      .postJob(bnId, encoded, new BN(Math.round(paymentAmount * 1_000_000)))
       .accounts({
         job:                jobPubkey,
         escrowTokenAccount: escrowPubkey,
@@ -138,10 +148,18 @@ export class BrewingClient {
   // ── getOpenJobs ─────────────────────────────────────────────────────────────
   /**
    * Fetch all jobs currently Open and available to accept.
+   *
+   * @param capability  Optional filter — only return jobs tagged with this
+   *                    capability (e.g. "research", "coding").
+   *                    Omit to return all open jobs regardless of capability.
    */
-  async getOpenJobs(): Promise<Job[]> {
+  async getOpenJobs(capability?: string): Promise<Job[]> {
     const all = await this.getAllJobs();
-    return all.filter((j) => j.status === "Open");
+    return all.filter((j) => {
+      if (j.status !== "Open") return false;
+      if (capability !== undefined && j.capability !== capability) return false;
+      return true;
+    });
   }
 
   // ── getAllJobs ──────────────────────────────────────────────────────────────
@@ -268,9 +286,14 @@ export class BrewingClient {
   private _parseAccount(a: any): Job {
     const zeroKey = PublicKey.default.toBase58();
     const workerStr = (a.account.workerAgent as PublicKey).toBase58();
+    const rawDescription = a.account.description as string;
+    const { capability, task } = decodeDescription(rawDescription);
+
     return {
       jobId:         (a.account.jobId as BN).toNumber(),
-      description:   a.account.description as string,
+      description:   rawDescription,
+      capability,
+      task,
       paymentAmount: (a.account.paymentAmount as BN).toNumber() / 1_000_000,
       posterAgent:   (a.account.posterAgent as PublicKey).toBase58(),
       workerAgent:   workerStr === zeroKey ? null : workerStr,

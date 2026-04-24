@@ -5,7 +5,11 @@
   "scripts": {
     "build": "anchor build",
     "test": "anchor test",
-    "lint": "eslint app/src tests --ext .ts,.tsx"
+    "lint": "eslint app/src tests --ext .ts,.tsx",
+    "worker":   "npm run worker   --workspace=brewing-demo",
+    "poster":   "npm run poster   --workspace=brewing-demo",
+    "post-job": "npm run post-job --workspace=brewing-demo",
+    "demo":     "npm run demo     --workspace=brewing-demo"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",
@@ -27,6 +31,7 @@
   },
   "workspaces": [
     "app",
-    "sdk"
+    "sdk",
+    "demo"
   ]
 }

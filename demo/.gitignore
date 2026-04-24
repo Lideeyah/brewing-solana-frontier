@@ -1,0 +1,5 @@
+.env
+poster.json
+worker.json
+node_modules/
+dist/

@@ -1,0 +1,27 @@
+{
+  "name": "brewing-demo",
+  "version": "0.2.0",
+  "private": true,
+  "description": "End-to-end demo scripts and autonomous agent daemons for the Brewing marketplace",
+  "scripts": {
+    "demo":     "tsx agent-demo.ts",
+    "worker":   "tsx worker-agent.ts",
+    "poster":   "tsx poster-daemon.ts",
+    "post-job": "tsx post-job.ts",
+    "start":    "concurrently -n poster,worker -c magenta,cyan \"tsx poster-daemon.ts\" \"tsx worker-agent.ts\"",
+    "recover":  "tsx recover-job.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@solana/spl-token": "^0.4.6",
+    "@solana/web3.js": "^1.91.8",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.6",
+    "@types/node": "^20.12.0",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}
