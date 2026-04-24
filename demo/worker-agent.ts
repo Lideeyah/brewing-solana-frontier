@@ -1,24 +1,32 @@
 #!/usr/bin/env tsx
 /**
- * Brewing Research Worker Agent
+ * Brewing Worker Agent  —  universal, capability-configurable
  * ─────────────────────────────────────────────────────────────────────────────
- * A self-running agent that operates indefinitely without human intervention:
+ * A self-running agent that operates indefinitely without human intervention.
+ * The same script handles any capability type — just set WORKER_CAPABILITY.
  *
- *   1. Polls Brewing every 10 s for open jobs tagged [cap:research]
- *   2. Accepts each matching job on-chain
- *   3. Calls Claude claude-opus-4-7 (adaptive thinking) with the job prompt
- *   4. Submits the AI response as work output on-chain
- *   5. Waits for payment confirmation (USDC released by the poster daemon)
+ *   1. Polls Brewing every 10 s for open jobs matching WORKER_CAPABILITY
+ *   2. Skips jobs below MIN_PAYMENT_USDC (default: 0.01)
+ *   3. Accepts each matching job on-chain
+ *   4. Calls Claude claude-opus-4-7 (adaptive thinking) with the job prompt
+ *   5. Submits the AI response as work output on-chain
+ *   6. Waits for payment confirmation (USDC released by the poster daemon)
  *
- * Multiple jobs run concurrently — the poll loop never blocks on a single job.
+ * ── Capability types ─────────────────────────────────────────────────────────
+ *   WORKER_CAPABILITY=research   Research, analysis, summarisation
+ *   WORKER_CAPABILITY=coding     Code generation, debugging, review
+ *   WORKER_CAPABILITY=trading    Price analysis, strategy evaluation
+ *   WORKER_CAPABILITY=writing    Copywriting, content, translation
  *
- * ── Setup ────────────────────────────────────────────────────────────────────
- *   cp .env.example .env
- *   # set WORKER_SECRET_KEY and ANTHROPIC_API_KEY
- *   npm run worker
+ * ── Convenience scripts ──────────────────────────────────────────────────────
+ *   npm run worker              (research — default)
+ *   npm run worker:coding
+ *   npm run worker:trading
+ *   npm run worker:writing
  *
- * Pair with `npm run poster` (poster-daemon.ts) for a fully autonomous economy.
- * Post research jobs with `npm run post-job`.
+ * ── Full setup ────────────────────────────────────────────────────────────────
+ *   cp .env.example .env        # fill in keys
+ *   npm start                   # runs poster daemon + research worker together
  */
 
 import "dotenv/config";
@@ -36,15 +44,48 @@ import {
 } from "@solana/spl-token";
 import { BrewingClient, DEVNET_USDC_MINT, type Job } from "../sdk/src/index";
 
-// ── Config ────────────────────────────────────────────────────────────────────
-const CAPABILITY       = "research";
-const POLL_INTERVAL_MS = 10_000;          // how often to scan for new jobs
-const PAYMENT_WAIT_MS  = 10 * 60_000;    // max time to wait for payment (10 min)
-const PAYMENT_POLL_MS  = 8_000;          // how often to check for payment
-const RPC_URL          = "https://api.devnet.solana.com";
-const USDC_MINT        = new PublicKey(DEVNET_USDC_MINT);
-const EXPLORER_TX      = (sig: string) =>
+// ── Config — all overridable via environment variables ────────────────────────
+const CAPABILITY        = process.env.WORKER_CAPABILITY   ?? "research";
+const MIN_PAYMENT_USDC  = parseFloat(process.env.MIN_PAYMENT_USDC ?? "0.01");
+const POLL_INTERVAL_MS  = 10_000;
+const PAYMENT_WAIT_MS   = 10 * 60_000;
+const PAYMENT_POLL_MS   = 8_000;
+const RPC_URL           = "https://api.devnet.solana.com";
+const USDC_MINT         = new PublicKey(DEVNET_USDC_MINT);
+const EXPLORER_TX       = (sig: string) =>
   `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
+
+// ── Capability-specific system prompts ────────────────────────────────────────
+const SYSTEM_PROMPTS: Record<string, string> = {
+  research: [
+    "You are a professional research agent operating in a decentralised AI job marketplace.",
+    "Deliver thorough, accurate, well-structured responses.",
+    "Be concise yet complete. No preamble — go straight to the substance.",
+  ].join(" "),
+
+  coding: [
+    "You are an expert software engineer operating in a decentralised AI job marketplace.",
+    "Write clean, correct, production-quality code with clear inline comments.",
+    "Include usage examples where helpful. No preamble.",
+  ].join(" "),
+
+  trading: [
+    "You are a quantitative DeFi analyst operating in a decentralised AI job marketplace.",
+    "Provide rigorous, data-driven analysis of trading strategies and market conditions.",
+    "Always note assumptions, risks, and confidence levels. No preamble.",
+  ].join(" "),
+
+  writing: [
+    "You are a professional writer and editor operating in a decentralised AI job marketplace.",
+    "Produce polished, engaging, well-structured content tailored to the requested format.",
+    "Match tone and style to the brief. No preamble.",
+  ].join(" "),
+};
+
+const SYSTEM_PROMPT =
+  process.env.WORKER_SYSTEM_PROMPT ??
+  SYSTEM_PROMPTS[CAPABILITY] ??
+  "You are a skilled AI agent. Complete the task accurately and concisely.";
 
 // ── Validate environment ──────────────────────────────────────────────────────
 if (!process.env.WORKER_SECRET_KEY) {
@@ -86,6 +127,7 @@ async function main() {
   console.log("╚═════════════════════════════════════════════════════════════╝");
   console.log();
   log(`Capability    : ${CAPABILITY}`);
+  log(`Min payment   : ${MIN_PAYMENT_USDC.toFixed(2)} USDC`);
   log(`Wallet        : ${workerKeypair.publicKey.toBase58()}`);
   log(`Poll interval : every ${POLL_INTERVAL_MS / 1000}s`);
   console.log();
@@ -144,7 +186,9 @@ async function main() {
   while (true) {
     try {
       const openJobs = await client.getOpenJobs(CAPABILITY);
-      const newJobs  = openJobs.filter((j) => !processing.has(j.jobId));
+      const newJobs  = openJobs.filter(
+        (j) => !processing.has(j.jobId) && j.paymentAmount >= MIN_PAYMENT_USDC
+      );
 
       if (newJobs.length === 0) {
         log(`No new [cap:${CAPABILITY}] jobs found.`);
@@ -217,11 +261,7 @@ async function handleJob(
     max_tokens: 4096,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     thinking: { type: "adaptive" } as any,
-    system: [
-      "You are a professional research agent operating autonomously inside a",
-      "decentralised AI job marketplace. Deliver thorough, accurate, well-structured",
-      "responses. Be concise yet complete. No preamble — go straight to the substance.",
-    ].join(" "),
+    system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: task }],
   });
 
