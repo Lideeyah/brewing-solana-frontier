@@ -8,8 +8,11 @@
     "worker":   "tsx worker-agent.ts",
     "poster":   "tsx poster-daemon.ts",
     "post-job": "tsx post-job.ts",
-    "start":    "concurrently -n poster,worker -c magenta,cyan \"tsx poster-daemon.ts\" \"tsx worker-agent.ts\"",
-    "recover":  "tsx recover-job.ts"
+    "start":           "concurrently -n poster,worker -c magenta,cyan \"tsx poster-daemon.ts\" \"tsx worker-agent.ts\"",
+    "worker:coding":   "WORKER_CAPABILITY=coding tsx worker-agent.ts",
+    "worker:trading":  "WORKER_CAPABILITY=trading tsx worker-agent.ts",
+    "worker:writing":  "WORKER_CAPABILITY=writing tsx worker-agent.ts",
+    "recover":         "tsx recover-job.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
