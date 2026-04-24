@@ -4,10 +4,12 @@ export type {
   Job,
   JobStatus,
   PostJobResult,
+  PostJobOptions,
   ActionResult,
   SubmitWorkResult,
   WalletAdapter,
 } from "./types";
+export { encodeDescription, decodeDescription } from "./types";
 
 // Re-export useful Solana types
 export { Connection, Keypair, PublicKey } from "@solana/web3.js";

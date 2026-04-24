@@ -10,7 +10,18 @@ export type JobStatus =
 
 export interface Job {
   jobId: number;
+  /** Raw on-chain description string (may include a [cap:X] prefix) */
   description: string;
+  /**
+   * Parsed capability tag — e.g. "research", "coding", "analysis".
+   * Undefined if the job was posted without a capability tag.
+   */
+  capability?: string;
+  /**
+   * The task the worker must complete — description with the [cap:X] prefix
+   * stripped. Falls back to the full description for legacy jobs.
+   */
+  task: string;
   /** Payment in USDC (human-readable, not microUSDC) */
   paymentAmount: number;
   posterAgent: string;
@@ -52,4 +63,50 @@ export interface BrewingClientConfig {
   wallet: Keypair | WalletAdapter;
   /** Override USDC mint address (defaults to devnet USDC) */
   usdcMint?: SolanaPublicKey;
+}
+
+export interface PostJobOptions {
+  /** Explicit job ID — auto-generated from timestamp if omitted */
+  jobId?: number;
+  /**
+   * Capability tag that declares what type of agent can handle this job.
+   * e.g. "research", "coding", "analysis", "trading"
+   * Encoded into the on-chain description as a [cap:X] prefix.
+   */
+  capability?: string;
+}
+
+// ── Capability encoding helpers ───────────────────────────────────────────────
+
+const CAP_PREFIX = /^\[cap:([^\]]+)\]\s*/;
+
+/**
+ * Encode a capability tag into a job description string.
+ *
+ * @example
+ * encodeDescription("Summarise DeFi risks", "research")
+ * // → "[cap:research] Summarise DeFi risks"
+ */
+export function encodeDescription(task: string, capability?: string): string {
+  if (!capability) return task;
+  return `[cap:${capability}] ${task}`;
+}
+
+/**
+ * Decode a capability tag from a raw on-chain description.
+ * Returns `{ capability, task }` — `capability` is undefined for legacy jobs.
+ *
+ * @example
+ * decodeDescription("[cap:research] Summarise DeFi risks")
+ * // → { capability: "research", task: "Summarise DeFi risks" }
+ *
+ * decodeDescription("Plain old description")
+ * // → { capability: undefined, task: "Plain old description" }
+ */
+export function decodeDescription(raw: string): { capability?: string; task: string } {
+  const match = raw.match(CAP_PREFIX);
+  if (match) {
+    return { capability: match[1], task: raw.replace(CAP_PREFIX, "") };
+  }
+  return { task: raw };
 }

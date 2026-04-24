@@ -15,6 +15,7 @@ import {
   relativeTime,
   STATUS_META,
   ACTIVITY_META,
+  decodeDescription,
 } from '../data/mockData';
 import { useBrewingProgram } from '../hooks/useBrewingProgram';
 import { useJobActions } from '../hooks/useJobActions';
@@ -41,17 +42,24 @@ function parseChainStatus(raw: Record<string, unknown>): JobStatus {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function chainToJob(pubkey: PublicKey, acc: any): Job | null {
   try {
-    const zeroKey = PublicKey.default.toBase58();
+    const zeroKey   = PublicKey.default.toBase58();
     const workerStr = (acc.workerAgent as PublicKey).toBase58();
+    const rawDesc   = acc.description as string;
+    const { capability, task } = decodeDescription(rawDesc);
+    const tag = capability
+      ? capability.charAt(0).toUpperCase() + capability.slice(1)
+      : 'On-chain';
     return {
       jobId:        (acc.jobId as BN).toNumber(),
-      description:  acc.description as string,
+      description:  rawDesc,
+      capability,
+      task,
       paymentUsdc:  (acc.paymentAmount as BN).toNumber() / 1_000_000,
       posterAgent:  (acc.posterAgent as PublicKey).toBase58(),
       workerAgent:  workerStr === zeroKey ? null : workerStr,
       status:       parseChainStatus(acc.status as Record<string, unknown>),
       postedAt:     new Date(),
-      tag:          'On-chain',
+      tag,
       _pubkey:      pubkey.toBase58(),
     } as Job & { _pubkey: string };
   } catch {
@@ -211,6 +219,8 @@ export default function JobBoard() {
     const demoJob: Job = {
       jobId: DEMO_JOB_ID,
       description: 'Analyse sentiment across the top 50 DeFi influencer accounts on X. Return structured JSON signal (bullish/bearish/neutral + confidence %) for SOL/USDC. Required within 60 seconds.',
+      capability: undefined,
+      task: 'Analyse sentiment across the top 50 DeFi influencer accounts on X. Return structured JSON signal (bullish/bearish/neutral + confidence %) for SOL/USDC. Required within 60 seconds.',
       paymentUsdc: 0.10,
       posterAgent: DEMO_POSTER,
       workerAgent: null,
@@ -473,7 +483,7 @@ function JobCard({ job, selected, isDemo, isChain, onClick }: { job: Job; select
         </div>
         <StatusDot status={job.status} />
       </div>
-      <p style={s.jobDesc}>{job.description}</p>
+      <p style={s.jobDesc}>{job.task}</p>
       <div style={s.jobCardBottom}>
         <div style={s.agentRow}>
           <span style={s.agentAddr}>{shortAddr(job.posterAgent)}</span>
@@ -552,7 +562,7 @@ function JobDetail({ job, onClose, onSuccess, onError }: {
       <div style={s.detailSection}><StatusDot status={job.status} large /></div>
       <div style={s.detailSection}>
         <div style={s.detailLabel}>DESCRIPTION</div>
-        <p style={s.detailText}>{job.description}</p>
+        <p style={s.detailText}>{job.task}</p>
       </div>
       <div style={s.detailGrid}>
         <div style={s.detailCard}>
