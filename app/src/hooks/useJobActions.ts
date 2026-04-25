@@ -11,8 +11,11 @@ export const USDC_MINT = new PublicKey(
   "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 );
 
+// Protocol treasury — receives 2.5% fee on every release_payment
+const TREASURY = new PublicKey("2WujcJGNEr45mikPcyR4jY8WVKXoADakYyh7UF6Jvspj");
+
 /**
- * High-level hook that exposes the four core job lifecycle actions.
+ * High-level hook that exposes the five core job lifecycle actions.
  * All methods return the transaction signature on success and throw on error.
  */
 export function useJobActions() {
@@ -85,14 +88,37 @@ export function useJobActions() {
       const id = new BN(jobId);
       const [jobPubkey] = jobPda(publicKey, id);
       const [escrowPubkey] = escrowPda(publicKey, id);
-      const workerAta = await getAssociatedTokenAddress(USDC_MINT, workerPubkey);
+      const workerAta    = await getAssociatedTokenAddress(USDC_MINT, workerPubkey);
+      const treasuryAta  = await getAssociatedTokenAddress(USDC_MINT, TREASURY);
 
       return methods
         .releasePayment(id)
         .accounts({
+          job:                    jobPubkey,
+          escrowTokenAccount:     escrowPubkey,
+          workerTokenAccount:     workerAta,
+          treasuryTokenAccount:   treasuryAta,
+          posterAgent:            publicKey,
+        })
+        .rpc() as Promise<string>;
+    },
+    [methods, publicKey]
+  );
+
+  const reclaimEscrow = useCallback(
+    async (jobId: number, posterPubkey: PublicKey): Promise<string> => {
+      if (!methods || !publicKey) throw new Error("Wallet not connected");
+      const id = new BN(jobId);
+      const [jobPubkey]   = jobPda(posterPubkey, id);
+      const [escrowPubkey] = escrowPda(posterPubkey, id);
+      const posterAta     = await getAssociatedTokenAddress(USDC_MINT, publicKey);
+
+      return methods
+        .reclaimEscrow(id)
+        .accounts({
           job:                jobPubkey,
           escrowTokenAccount: escrowPubkey,
-          workerTokenAccount: workerAta,
+          posterTokenAccount: posterAta,
           posterAgent:        publicKey,
         })
         .rpc() as Promise<string>;
@@ -100,5 +126,5 @@ export function useJobActions() {
     [methods, publicKey]
   );
 
-  return { postJob, acceptJob, completeJob, releasePayment };
+  return { postJob, acceptJob, completeJob, releasePayment, reclaimEscrow };
 }

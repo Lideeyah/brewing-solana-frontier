@@ -36,6 +36,7 @@ function parseChainStatus(raw: Record<string, unknown>): JobStatus {
   if ('pendingRelease' in raw) return 'PendingRelease';
   if ('completed' in raw)      return 'Completed';
   if ('disputed' in raw)       return 'Disputed';
+  if ('cancelled' in raw)      return 'Cancelled';
   return 'Disputed';
 }
 
@@ -92,6 +93,9 @@ export default function JobBoard() {
   const prevJobsRef                     = useRef<Job[]>([]);
   const isFirstFetchRef                 = useRef(true);
   const toastTimerRef                   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const demoCompletedRef                = useRef(false);
+  const [demoChainJobId, setDemoChainJobId] = useState<number | null>(null);
+  const [demoTaskInfo, setDemoTaskInfo]     = useState<{ task: string; payment: number; capability?: string } | null>(null);
 
   // ── Clock tick (for relative timestamps) ──────────────────────────────────
   useEffect(() => {
@@ -158,6 +162,10 @@ export default function JobBoard() {
                 jobId: j.jobId, actor: j.workerAgent ?? j.posterAgent,
                 verificationScore: j.verificationScore,
                 createdAt: now, txSig: ref });
+            } else if (j.status === 'Cancelled') {
+              pushEvent({ id: `c-cancel-${j.jobId}-${now}`, type: 'JobCancelled',
+                jobId: j.jobId, actor: j.posterAgent,
+                createdAt: now, txSig: ref });
             }
           }
         }
@@ -175,9 +183,40 @@ export default function JobBoard() {
 
   useEffect(() => {
     fetchChainJobs();
-    const id = setInterval(fetchChainJobs, 15_000);
+    const id = setInterval(fetchChainJobs, demoBusy ? 5_000 : 15_000);
     return () => clearInterval(id);
-  }, [fetchChainJobs]);
+  }, [fetchChainJobs, demoBusy]);
+
+  // ── Derive demo step from live chain state ────────────────────────────────
+  useEffect(() => {
+    if (!demoChainJobId || !demoBusy) return;
+    const job = chainJobs.find(j => j.jobId === demoChainJobId);
+    if (!job) return;
+
+    const newStep =
+      job.status === 'Open'           ? 1 :
+      job.status === 'InProgress'     ? 2 :
+      job.status === 'PendingRelease' ? 3 :
+      job.status === 'Completed'      ? 4 : 0;
+
+    if (newStep === 0) return;
+
+    setDemoStep(prev => newStep > prev ? newStep : prev);
+
+    if (newStep === 4 && !demoCompletedRef.current) {
+      demoCompletedRef.current = true;
+      setTimeout(() => {
+        setDemoStep(5);
+        setTimeout(() => {
+          setDemoStep(0);
+          setDemoBusy(false);
+          setDemoChainJobId(null);
+          setDemoTaskInfo(null);
+          demoCompletedRef.current = false;
+        }, 3_000);
+      }, 2_500);
+    }
+  }, [chainJobs, demoChainJobId, demoBusy]);
 
   // ── Compute stats from real chain data ────────────────────────────────────
   const stats = useMemo(() => {
@@ -215,16 +254,44 @@ export default function JobBoard() {
     }, 6000);
   }, []);
 
-  // ── Demo flow ─────────────────────────────────────────────────────────────
-  function runDemo() {
+  // ── Demo flow — tries real on-chain job, falls back to mock ──────────────
+  async function runDemo() {
     if (demoBusy) return;
+    setDemoBusy(true);
+    setDemoChainJobId(null);
+    setDemoTaskInfo(null);
+    setFilter('All');
+    setSelectedJob(null);
+    setShowPostForm(false);
+    setDemoStep(1);
+
+    try {
+      const res = await fetch('/api/demo-job', { method: 'POST' });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`API ${res.status}: ${txt.slice(0, 80)}`);
+      }
+      const data = await res.json() as {
+        jobId: number; task: string; capability?: string; payment: number;
+      };
+      setDemoChainJobId(data.jobId);
+      setDemoTaskInfo({ task: data.task, payment: data.payment, capability: data.capability });
+      // demoStep stays at 1; the useEffect above drives subsequent steps from chain state
+    } catch (e) {
+      console.warn('[demo] real demo unavailable, using mock:', e);
+      setDemoBusy(false);
+      setDemoStep(0);
+      runMockDemo();
+    }
+  }
+
+  function runMockDemo() {
     setDemoBusy(true);
     setFilter('All');
     setSelectedJob(null);
     setShowPostForm(false);
     setDemoJobs(prev => prev.filter(j => j.jobId !== DEMO_JOB_ID));
 
-    // Create the demo job fresh so postedAt reflects the actual demo run time
     const demoJob: Job = {
       jobId: DEMO_JOB_ID,
       description: 'Analyse sentiment across the top 50 DeFi influencer accounts on X. Return structured JSON signal (bullish/bearish/neutral + confidence %) for SOL/USDC. Required within 60 seconds.',
@@ -334,7 +401,7 @@ export default function JobBoard() {
           </div>
         </div>
         <div style={s.rightCol}>
-          {demoStep > 0 && <DemoConsole step={demoStep} />}
+          {demoStep > 0 && <DemoConsole step={demoStep} task={demoTaskInfo?.task} payment={demoTaskInfo?.payment} />}
           {!demoStep && displayedJob && (
             <JobDetail
               job={displayedJob}
@@ -492,8 +559,8 @@ function StatDiv() {
 // ── Filter bar ─────────────────────────────────────────────────────────────────
 
 type FilterOption = 'All' | JobStatus;
-const FILTERS: FilterOption[] = ['All', 'Open', 'InProgress', 'PendingRelease', 'Completed', 'Disputed'];
-const FILTER_LABELS: Record<FilterOption, string> = { All: 'All', Open: 'Open', InProgress: 'In Progress', PendingRelease: 'Pending', Completed: 'Completed', Disputed: 'Disputed' };
+const FILTERS: FilterOption[] = ['All', 'Open', 'InProgress', 'PendingRelease', 'Completed', 'Disputed', 'Cancelled'];
+const FILTER_LABELS: Record<FilterOption, string> = { All: 'All', Open: 'Open', InProgress: 'In Progress', PendingRelease: 'Pending', Completed: 'Completed', Disputed: 'Disputed', Cancelled: 'Cancelled' };
 
 function FilterBar({ active, onChange, jobs }: { active: FilterOption; onChange: (f: FilterOption) => void; jobs: Job[] }) {
   const counts = FILTERS.reduce<Record<string, number>>((acc, f) => {
@@ -532,14 +599,16 @@ function ScoreBadge({ score, disputed }: { score: number; disputed?: boolean }) 
 }
 
 function JobCard({ job, selected, isDemo, isChain, onClick }: { job: Job; selected: boolean; isDemo: boolean; isChain: boolean; onClick: () => void }) {
-  const isDisputed = job.status === 'Disputed';
-  const showScore  = (job.status === 'Completed' || job.status === 'Disputed') && !!job.verificationScore;
+  const isDisputed  = job.status === 'Disputed';
+  const isCancelled = job.status === 'Cancelled';
+  const showScore   = (job.status === 'Completed' || job.status === 'Disputed') && !!job.verificationScore;
   return (
     <div onClick={onClick} style={{
       ...s.jobCard,
       ...(selected ? s.jobCardSelected : {}),
       ...(isDemo ? s.jobCardDemo : {}),
-      ...(isDisputed ? { border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.03)' } : {}),
+      ...(isDisputed  ? { border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.03)' } : {}),
+      ...(isCancelled ? { opacity: 0.45 } : {}),
     }}>
       <div style={s.jobCardTop}>
         <div style={s.jobIdRow}>
@@ -572,7 +641,8 @@ function StatusDot({ status, large }: { status: JobStatus; large?: boolean }) {
   const meta = STATUS_META[status];
   const showDot = meta.dotOpacity > 0;
   const isActive = status === 'Open' || status === 'InProgress';
-  const isDisputed = status === 'Disputed';
+  const isDisputed  = status === 'Disputed';
+  const isCancelled = status === 'Cancelled';
   const dotColor = isDisputed ? '#ef4444' : A;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -588,7 +658,8 @@ function StatusDot({ status, large }: { status: JobStatus; large?: boolean }) {
       )}
       <span style={{
         fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.04em',
-        color: isDisputed ? '#ef4444' : showDot ? 'var(--text-secondary)' : 'var(--text-muted)',
+        color: isDisputed ? '#ef4444' : isCancelled ? '#6b7280' : showDot ? 'var(--text-secondary)' : 'var(--text-muted)',
+        textDecoration: isCancelled ? 'line-through' : undefined,
       }}>
         {meta.label}
       </span>
@@ -605,7 +676,7 @@ function JobDetail({ job, onClose, onSuccess, onError }: {
   onError: (msg: string) => void;
 }) {
   const { publicKey } = useWallet();
-  const { acceptJob, completeJob, releasePayment } = useJobActions();
+  const { acceptJob, completeJob, releasePayment, reclaimEscrow } = useJobActions();
   const [busy, setBusy] = useState(false);
 
   const isChain = (job as Job & { _pubkey?: string })._pubkey !== undefined;
@@ -728,6 +799,15 @@ function JobDetail({ job, onClose, onSuccess, onError }: {
             releasePayment(job.jobId, new PublicKey(job.workerAgent!)))}
         />
       )}
+      {isChain && job.status === 'Disputed' && isPoster && (
+        <ActionBtn
+          label="Reclaim Funds"
+          primary
+          busy={busy}
+          onClick={() => handleAction('Escrow reclaimed', () =>
+            reclaimEscrow(job.jobId, new PublicKey(job.posterAgent)))}
+        />
+      )}
 
       {/* Mock job CTA */}
       {!isChain && job.status === 'Open'           && <ActionBtn label="Accept Job (mock)" />}
@@ -786,23 +866,27 @@ function ActionBtn({ label, primary, busy, onClick }: { label: string; primary?:
 
 // ── Demo console ───────────────────────────────────────────────────────────────
 
-const DEMO_STEPS = [
-  { id: 1, label: 'Post Job',         detail: 'Escrow funded · 0.10 USDC locked' },
-  { id: 2, label: 'Accept Job',       detail: 'Worker committed on-chain' },
-  { id: 3, label: 'Work Delivered',   detail: 'JSON signal submitted' },
-  { id: 4, label: 'Payment Released', detail: '0.10 USDC transferred' },
-];
-
-function DemoConsole({ step }: { step: number }) {
+function DemoConsole({ step, task, payment }: { step: number; task?: string; payment?: number }) {
   const pct = step >= 5 ? 100 : Math.round(((step - 1) / 4) * 100);
+  const amt = (payment ?? 0.10).toFixed(2);
+  const demoSteps = [
+    { id: 1, label: 'Post Job',         detail: `Escrow funded · ${amt} USDC locked` },
+    { id: 2, label: 'Accept Job',       detail: 'Worker committed on-chain' },
+    { id: 3, label: 'Work Delivered',   detail: 'Output verified by Claude' },
+    { id: 4, label: 'Payment Released', detail: `${amt} USDC transferred` },
+  ];
+  // Show first 60 chars of task as subtitle
+  const subtitle = task
+    ? (task.length > 52 ? task.slice(0, 52) + '…' : task)
+    : `Sentiment Analysis · ${amt} USDC`;
   return (
     <div style={s.demoConsole}>
       <div style={s.panelHeader}>
-        <span style={s.panelTitle}>DEMO</span>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.08em' }}>Sentiment Analysis · 0.10 USDC</span>
+        <span style={s.panelTitle}>LIVE DEMO</span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.08em', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{subtitle}</span>
       </div>
       <div style={{ padding: '8px 20px' }}>
-        {DEMO_STEPS.map(ds => {
+        {demoSteps.map(ds => {
           const state = step > ds.id ? 'done' : step === ds.id ? 'active' : 'pending';
           return (
             <div key={ds.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
