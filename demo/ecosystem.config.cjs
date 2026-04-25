@@ -60,5 +60,11 @@ module.exports = {
       script: "npm",
       args:   "run worker:coding",
     },
+    {
+      ...COMMON,
+      name:   "brewing-writing",
+      script: "npm",
+      args:   "run worker:writing",
+    },
   ],
 };

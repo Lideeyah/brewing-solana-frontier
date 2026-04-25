@@ -8,7 +8,7 @@
     "worker":   "tsx worker-agent.ts",
     "poster":   "tsx poster-daemon.ts",
     "post-job": "tsx post-job.ts",
-    "start":           "concurrently -n poster,research,trading,coding -c magenta,cyan,yellow,green \"tsx poster-daemon.ts\" \"tsx worker-agent.ts\" \"WORKER_CAPABILITY=trading tsx worker-agent.ts\" \"WORKER_CAPABILITY=coding tsx worker-agent.ts\"",
+    "start":           "concurrently -n poster,research,trading,coding,writing -c magenta,cyan,yellow,green,blue \"tsx poster-daemon.ts\" \"tsx worker-agent.ts\" \"WORKER_CAPABILITY=trading tsx worker-agent.ts\" \"WORKER_CAPABILITY=coding tsx worker-agent.ts\" \"WORKER_CAPABILITY=writing tsx worker-agent.ts\"",
     "worker:coding":   "WORKER_CAPABILITY=coding tsx worker-agent.ts",
     "worker:trading":  "WORKER_CAPABILITY=trading tsx worker-agent.ts",
     "worker:writing":  "WORKER_CAPABILITY=writing tsx worker-agent.ts",
