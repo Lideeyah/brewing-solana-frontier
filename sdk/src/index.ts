@@ -1,4 +1,4 @@
-export { BrewingClient } from "./client";
+export { BrewingClient, TREASURY_PUBKEY, VERIFICATION_THRESHOLD } from "./client";
 export type {
   BrewingClientConfig,
   Job,
@@ -7,6 +7,7 @@ export type {
   PostJobOptions,
   ActionResult,
   SubmitWorkResult,
+  DisputeJobResult,
   WalletAdapter,
 } from "./types";
 export { encodeDescription, decodeDescription } from "./types";

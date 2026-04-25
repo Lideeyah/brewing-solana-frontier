@@ -35,7 +35,8 @@ function parseChainStatus(raw: Record<string, unknown>): JobStatus {
   if ('inProgress' in raw)     return 'InProgress';
   if ('pendingRelease' in raw) return 'PendingRelease';
   if ('completed' in raw)      return 'Completed';
-  return 'Cancelled';
+  if ('disputed' in raw)       return 'Disputed';
+  return 'Disputed';
 }
 
 // ── Map on-chain JobAccount → frontend Job ────────────────────────────────────
@@ -50,17 +51,18 @@ function chainToJob(pubkey: PublicKey, acc: any): Job | null {
       ? capability.charAt(0).toUpperCase() + capability.slice(1)
       : 'On-chain';
     return {
-      jobId:        (acc.jobId as BN).toNumber(),
-      description:  rawDesc,
+      jobId:             (acc.jobId as BN).toNumber(),
+      description:       rawDesc,
       capability,
       task,
-      paymentUsdc:  (acc.paymentAmount as BN).toNumber() / 1_000_000,
-      posterAgent:  (acc.posterAgent as PublicKey).toBase58(),
-      workerAgent:  workerStr === zeroKey ? null : workerStr,
-      status:       parseChainStatus(acc.status as Record<string, unknown>),
-      postedAt:     new Date(),
+      paymentUsdc:       (acc.paymentAmount as BN).toNumber() / 1_000_000,
+      posterAgent:       (acc.posterAgent as PublicKey).toBase58(),
+      workerAgent:       workerStr === zeroKey ? null : workerStr,
+      status:            parseChainStatus(acc.status as Record<string, unknown>),
+      verificationScore: (acc.verificationScore as number) ?? 0,
+      postedAt:          new Date(),
       tag,
-      _pubkey:      pubkey.toBase58(),
+      _pubkey:           pubkey.toBase58(),
     } as Job & { _pubkey: string };
   } catch {
     return null; // skip malformed accounts
@@ -133,7 +135,6 @@ export default function JobBoard() {
           const ref = (j as Job & { _pubkey?: string })._pubkey ?? String(j.jobId);
 
           if (!old) {
-            // Brand-new job posted on-chain
             pushEvent({ id: `c-post-${j.jobId}-${now}`, type: 'JobPosted',
               jobId: j.jobId, actor: j.posterAgent, amount: j.paymentUsdc,
               createdAt: now, txSig: ref });
@@ -150,7 +151,13 @@ export default function JobBoard() {
               pushEvent({ id: `c-rel-${j.jobId}-${now}`, type: 'PaymentReleased',
                 jobId: j.jobId, actor: j.posterAgent,
                 counterparty: j.workerAgent ?? undefined,
-                amount: j.paymentUsdc, createdAt: now, txSig: ref });
+                amount: j.paymentUsdc * 0.975, // 97.5% after 2.5% fee
+                createdAt: now, txSig: ref });
+            } else if (j.status === 'Disputed') {
+              pushEvent({ id: `c-dis-${j.jobId}-${now}`, type: 'JobDisputed',
+                jobId: j.jobId, actor: j.workerAgent ?? j.posterAgent,
+                verificationScore: j.verificationScore,
+                createdAt: now, txSig: ref });
             }
           }
         }
@@ -485,8 +492,8 @@ function StatDiv() {
 // ── Filter bar ─────────────────────────────────────────────────────────────────
 
 type FilterOption = 'All' | JobStatus;
-const FILTERS: FilterOption[] = ['All', 'Open', 'InProgress', 'PendingRelease', 'Completed'];
-const FILTER_LABELS: Record<FilterOption, string> = { All: 'All', Open: 'Open', InProgress: 'In Progress', PendingRelease: 'Pending', Completed: 'Completed', Cancelled: 'Cancelled' };
+const FILTERS: FilterOption[] = ['All', 'Open', 'InProgress', 'PendingRelease', 'Completed', 'Disputed'];
+const FILTER_LABELS: Record<FilterOption, string> = { All: 'All', Open: 'Open', InProgress: 'In Progress', PendingRelease: 'Pending', Completed: 'Completed', Disputed: 'Disputed' };
 
 function FilterBar({ active, onChange, jobs }: { active: FilterOption; onChange: (f: FilterOption) => void; jobs: Job[] }) {
   const counts = FILTERS.reduce<Record<string, number>>((acc, f) => {
@@ -507,15 +514,40 @@ function FilterBar({ active, onChange, jobs }: { active: FilterOption; onChange:
 
 // ── Job card ───────────────────────────────────────────────────────────────────
 
-function JobCard({ job, selected, isDemo, isChain, onClick }: { job: Job; selected: boolean; isDemo: boolean; isChain: boolean; onClick: () => void }) {
+function ScoreBadge({ score, disputed }: { score: number; disputed?: boolean }) {
+  if (!score || score === 0) return null;
+  const color = disputed ? '#ef4444' : score >= 9 ? '#22c55e' : score >= 7 ? A : '#ef4444';
+  const bg    = disputed ? 'rgba(239,68,68,0.10)' : score >= 7 ? 'rgba(245,158,11,0.10)' : 'rgba(239,68,68,0.10)';
+  const border = disputed ? 'rgba(239,68,68,0.25)' : score >= 7 ? A30 : 'rgba(239,68,68,0.25)';
   return (
-    <div onClick={onClick} style={{ ...s.jobCard, ...(selected ? s.jobCardSelected : {}), ...(isDemo ? s.jobCardDemo : {}) }}>
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 3,
+      fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 600,
+      letterSpacing: '0.06em', padding: '1px 5px', borderRadius: 3,
+      color, background: bg, border: `1px solid ${border}`,
+    }}>
+      ✦ {score}/10
+    </span>
+  );
+}
+
+function JobCard({ job, selected, isDemo, isChain, onClick }: { job: Job; selected: boolean; isDemo: boolean; isChain: boolean; onClick: () => void }) {
+  const isDisputed = job.status === 'Disputed';
+  const showScore  = (job.status === 'Completed' || job.status === 'Disputed') && !!job.verificationScore;
+  return (
+    <div onClick={onClick} style={{
+      ...s.jobCard,
+      ...(selected ? s.jobCardSelected : {}),
+      ...(isDemo ? s.jobCardDemo : {}),
+      ...(isDisputed ? { border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.03)' } : {}),
+    }}>
       <div style={s.jobCardTop}>
         <div style={s.jobIdRow}>
           <span style={s.jobId}>#{String(job.jobId).padStart(4, '0')}</span>
           <span style={s.tag}>{job.tag}</span>
           {isDemo  && <span style={s.demoPill}>demo</span>}
           {isChain && <span style={{ ...s.demoPill, color: '#f59e0b', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)' }}>live</span>}
+          {showScore && <ScoreBadge score={job.verificationScore!} disputed={isDisputed} />}
         </div>
         <StatusDot status={job.status} />
       </div>
@@ -540,18 +572,23 @@ function StatusDot({ status, large }: { status: JobStatus; large?: boolean }) {
   const meta = STATUS_META[status];
   const showDot = meta.dotOpacity > 0;
   const isActive = status === 'Open' || status === 'InProgress';
+  const isDisputed = status === 'Disputed';
+  const dotColor = isDisputed ? '#ef4444' : A;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
       {showDot && (
         <span style={{
           width: large ? 7 : 5, height: large ? 7 : 5, borderRadius: '50%', flexShrink: 0,
-          background: A, opacity: meta.dotOpacity,
+          background: dotColor, opacity: meta.dotOpacity,
           animation: isActive ? 'pulse-dot 2s ease-in-out infinite' : undefined,
         }} />
       )}
+      {isDisputed && (
+        <span style={{ fontSize: large ? 14 : 11, color: '#ef4444', lineHeight: 1 }}>⚠</span>
+      )}
       <span style={{
         fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.04em',
-        color: showDot ? 'var(--text-secondary)' : 'var(--text-muted)',
+        color: isDisputed ? '#ef4444' : showDot ? 'var(--text-secondary)' : 'var(--text-muted)',
       }}>
         {meta.label}
       </span>
@@ -604,12 +641,49 @@ function JobDetail({ job, onClose, onSuccess, onError }: {
         <div style={s.detailCard}>
           <div style={s.detailLabel}>PAYMENT</div>
           <div style={s.detailBigNum}>{job.paymentUsdc.toFixed(2)} <span style={s.detailUnit}>USDC</span></div>
+          {job.status === 'Completed' && (
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-muted)', marginTop: 3, letterSpacing: '0.06em' }}>
+              worker rcvd {(job.paymentUsdc * 0.975).toFixed(4)} · fee {(job.paymentUsdc * 0.025).toFixed(4)}
+            </div>
+          )}
         </div>
         <div style={{ ...s.detailCard, borderRight: 'none' }}>
           <div style={s.detailLabel}>CATEGORY</div>
           <div style={{ ...s.detailBigNum, fontSize: 15, color: 'var(--text-secondary)' }}>{job.tag}</div>
         </div>
       </div>
+      {/* Verification score — shown for Completed and Disputed jobs */}
+      {!!job.verificationScore && job.verificationScore > 0 && (
+        <div style={{ ...s.detailSection, borderLeft: `3px solid ${job.status === 'Disputed' ? '#ef4444' : '#22c55e'}` }}>
+          <div style={s.detailLabel}>CLAUDE VERIFICATION SCORE</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontSize: 28, fontWeight: 700,
+              color: job.status === 'Disputed' ? '#ef4444' : job.verificationScore >= 9 ? '#22c55e' : A,
+            }}>
+              {job.verificationScore}<span style={{ fontSize: 14, color: 'var(--text-muted)' }}>/10</span>
+            </span>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', gap: 2, marginBottom: 4 }}>
+                {Array.from({ length: 10 }, (_, i) => (
+                  <div key={i} style={{
+                    flex: 1, height: 4, borderRadius: 2,
+                    background: i < job.verificationScore!
+                      ? (job.status === 'Disputed' ? '#ef4444' : i < 6 ? '#ef4444' : A)
+                      : 'var(--border-mid)',
+                    transition: 'background 0.2s',
+                  }} />
+                ))}
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.06em' }}>
+                {job.status === 'Disputed'
+                  ? `Score ${job.verificationScore}/10 — below threshold (7) — payment held in escrow`
+                  : `Score ${job.verificationScore}/10 — passed verification — payment released`}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={s.detailSection}>
         <div style={s.detailLabel}>POSTER</div>
         <div style={s.addrFull}>{job.posterAgent}</div>

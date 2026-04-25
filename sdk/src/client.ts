@@ -16,6 +16,7 @@ import type {
   PostJobOptions,
   ActionResult,
   SubmitWorkResult,
+  DisputeJobResult,
   WalletAdapter,
 } from "./types";
 import { encodeDescription, decodeDescription } from "./types";
@@ -30,14 +31,20 @@ const DEVNET_USDC = new PublicKey(
   "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 );
 
+/** Protocol treasury address — receives 2.5% of every released payment. */
+export const TREASURY_PUBKEY = new PublicKey(
+  "2WujcJGNEr45mikPcyR4jY8WVKXoADakYyh7UF6Jvspj"
+);
+
+/** Minimum verification score to auto-release payment (inclusive). */
+export const VERIFICATION_THRESHOLD = 7;
+
 // ── Keypair → WalletAdapter shim (for server-side AI agents) ─────────────────
 class KeypairWallet implements WalletAdapter {
   constructor(private readonly keypair: Keypair) {}
   get publicKey() { return this.keypair.publicKey; }
   async signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T> {
-    if (tx instanceof Transaction) {
-      tx.sign(this.keypair);
-    }
+    if (tx instanceof Transaction) tx.sign(this.keypair);
     return tx;
   }
   async signAllTransactions<T extends Transaction | VersionedTransaction>(txs: T[]): Promise<T[]> {
@@ -73,7 +80,8 @@ function parseStatus(raw: Record<string, unknown>): JobStatus {
   if ("inProgress" in raw)     return "InProgress";
   if ("pendingRelease" in raw) return "PendingRelease";
   if ("completed" in raw)      return "Completed";
-  return "Cancelled";
+  if ("disputed" in raw)       return "Disputed";
+  return "Disputed"; // fallback for unknown variants
 }
 
 // ── Main client ───────────────────────────────────────────────────────────────
@@ -100,18 +108,6 @@ export class BrewingClient {
   }
 
   // ── postJob ─────────────────────────────────────────────────────────────────
-  /**
-   * Post a new job and lock USDC in escrow immediately.
-   *
-   * @param description   What the worker agent must deliver (max 512 chars,
-   *                      excluding the auto-added capability prefix)
-   * @param paymentAmount Amount in USDC (e.g. 0.10)
-   * @param options       Optional: `{ jobId?, capability? }`
-   *
-   * @example
-   * // Post a research job — workers filtering by capability:"research" will see it
-   * await client.postJob("Summarise DeFi trading risks", 0.10, { capability: "research" });
-   */
   async postJob(
     description: string,
     paymentAmount: number,
@@ -146,13 +142,6 @@ export class BrewingClient {
   }
 
   // ── getOpenJobs ─────────────────────────────────────────────────────────────
-  /**
-   * Fetch all jobs currently Open and available to accept.
-   *
-   * @param capability  Optional filter — only return jobs tagged with this
-   *                    capability (e.g. "research", "coding").
-   *                    Omit to return all open jobs regardless of capability.
-   */
   async getOpenJobs(capability?: string): Promise<Job[]> {
     const all = await this.getAllJobs();
     return all.filter((j) => {
@@ -177,10 +166,6 @@ export class BrewingClient {
   }
 
   // ── acceptJob ───────────────────────────────────────────────────────────────
-  /**
-   * Accept an open job. The connected wallet becomes the worker.
-   * @param jobId  The job ID to accept
-   */
   async acceptJob(jobId: number): Promise<ActionResult> {
     const job = await this._requireJob(jobId, "Open");
     const bnId = new BN(jobId);
@@ -201,13 +186,20 @@ export class BrewingClient {
 
   // ── submitWork ──────────────────────────────────────────────────────────────
   /**
-   * Mark a job as complete. Payment auto-releases if the connected wallet is
-   * also the poster (common in agent-to-agent or demo scenarios).
+   * Submit completed work on-chain with its verification score.
    *
-   * @param jobId   The job ID to complete
-   * @param result  Delivery artifact — stored in the transaction log via Memo
+   * @param jobId             The job ID to complete
+   * @param result            Delivery artifact (stored in transaction log via memo)
+   * @param verificationScore Claude quality score 1-10 (must be ≥ VERIFICATION_THRESHOLD=7)
+   *
+   * Calls `complete_job` with the score, then `release_payment` if this
+   * wallet is also the poster (auto-release for agent-to-agent flows).
    */
-  async submitWork(jobId: number, result: string): Promise<SubmitWorkResult> {
+  async submitWork(
+    jobId: number,
+    result: string,
+    verificationScore: number
+  ): Promise<SubmitWorkResult> {
     const job = await this._requireJob(jobId, "InProgress");
     if (job.workerAgent !== this.wallet.publicKey.toBase58()) {
       throw new Error("Connected wallet is not the assigned worker for this job");
@@ -217,10 +209,10 @@ export class BrewingClient {
     const posterKey = new PublicKey(job.posterAgent);
     const [jobPubkey] = jobPda(posterKey, bnId);
 
-    // Step 1 — complete_job (worker signs, records delivery on-chain)
+    // Step 1 — complete_job with verification score
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const completeTxSig: string = await (this.program as any).methods
-      .completeJob(bnId)
+      .completeJob(bnId, verificationScore)
       .accounts({
         job:         jobPubkey,
         workerAgent: this.wallet.publicKey,
@@ -228,60 +220,79 @@ export class BrewingClient {
       .rpc();
 
     // Step 2 — auto release_payment if this wallet is also the poster
-    const isPoster =
-      posterKey.toBase58() === this.wallet.publicKey.toBase58();
-
+    const isPoster = posterKey.toBase58() === this.wallet.publicKey.toBase58();
     if (!isPoster) {
-      return { completeTxSig, autoReleased: false };
+      return { completeTxSig, autoReleased: false, verificationScore };
     }
 
-    const [escrowPubkey] = escrowPda(posterKey, bnId);
-    const workerKey = new PublicKey(job.workerAgent!);
-    const workerAta = await getAssociatedTokenAddress(this.usdcMint, workerKey);
+    const releaseTxSig = await this._doReleasePayment(job, jobId);
+    return { completeTxSig, releaseTxSig, autoReleased: true, verificationScore };
+  }
+
+  // ── disputeJob ──────────────────────────────────────────────────────────────
+  /**
+   * Mark a job as Disputed when the verification score is below the threshold.
+   * Payment stays in escrow; the job moves to Disputed status.
+   *
+   * @param jobId             The job ID to dispute
+   * @param verificationScore Claude quality score 1-10 (should be < VERIFICATION_THRESHOLD=7)
+   */
+  async disputeJob(
+    jobId: number,
+    verificationScore: number
+  ): Promise<DisputeJobResult> {
+    const job = await this._requireJob(jobId, "InProgress");
+    if (job.workerAgent !== this.wallet.publicKey.toBase58()) {
+      throw new Error("Connected wallet is not the assigned worker for this job");
+    }
+
+    const bnId = new BN(jobId);
+    const posterKey = new PublicKey(job.posterAgent);
+    const [jobPubkey] = jobPda(posterKey, bnId);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const releaseTxSig: string = await (this.program as any).methods
-      .releasePayment(bnId)
+    const txSig: string = await (this.program as any).methods
+      .disputeJob(bnId, verificationScore)
       .accounts({
-        job:                jobPubkey,
-        escrowTokenAccount: escrowPubkey,
-        workerTokenAccount: workerAta,
-        posterAgent:        posterKey,
+        job:         jobPubkey,
+        workerAgent: this.wallet.publicKey,
       })
       .rpc();
 
-    return { completeTxSig, releaseTxSig, autoReleased: true };
+    return { txSig, verificationScore };
   }
 
   // ── releasePayment ──────────────────────────────────────────────────────────
-  /**
-   * Manually release payment (poster approves delivery).
-   * Call this if submitWork could not auto-release.
-   */
   async releasePayment(jobId: number): Promise<ActionResult> {
     const job = await this._requireJob(jobId, "PendingRelease");
+    const txSig = await this._doReleasePayment(job, jobId);
+    return { txSig };
+  }
+
+  // ── private helpers ────────────────────────────────────────────────────────
+
+  private async _doReleasePayment(job: Job, jobId: number): Promise<string> {
     const bnId = new BN(jobId);
     const posterKey = new PublicKey(job.posterAgent);
     const [jobPubkey] = jobPda(posterKey, bnId);
     const [escrowPubkey] = escrowPda(posterKey, bnId);
     const workerKey = new PublicKey(job.workerAgent!);
     const workerAta = await getAssociatedTokenAddress(this.usdcMint, workerKey);
+    const treasuryAta = await getAssociatedTokenAddress(this.usdcMint, TREASURY_PUBKEY);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const txSig: string = await (this.program as any).methods
+    return await (this.program as any).methods
       .releasePayment(bnId)
       .accounts({
-        job:                jobPubkey,
-        escrowTokenAccount: escrowPubkey,
-        workerTokenAccount: workerAta,
-        posterAgent:        this.wallet.publicKey,
+        job:                    jobPubkey,
+        escrowTokenAccount:     escrowPubkey,
+        workerTokenAccount:     workerAta,
+        treasuryTokenAccount:   treasuryAta,
+        posterAgent:            posterKey,
       })
-      .rpc();
-
-    return { txSig };
+      .rpc() as string;
   }
 
-  // ── private helpers ────────────────────────────────────────────────────────
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _parseAccount(a: any): Job {
     const zeroKey = PublicKey.default.toBase58();
@@ -290,15 +301,16 @@ export class BrewingClient {
     const { capability, task } = decodeDescription(rawDescription);
 
     return {
-      jobId:         (a.account.jobId as BN).toNumber(),
-      description:   rawDescription,
+      jobId:             (a.account.jobId as BN).toNumber(),
+      description:       rawDescription,
       capability,
       task,
-      paymentAmount: (a.account.paymentAmount as BN).toNumber() / 1_000_000,
-      posterAgent:   (a.account.posterAgent as PublicKey).toBase58(),
-      workerAgent:   workerStr === zeroKey ? null : workerStr,
-      status:        parseStatus(a.account.status as Record<string, unknown>),
-      address:       (a.publicKey as PublicKey).toBase58(),
+      paymentAmount:     (a.account.paymentAmount as BN).toNumber() / 1_000_000,
+      posterAgent:       (a.account.posterAgent as PublicKey).toBase58(),
+      workerAgent:       workerStr === zeroKey ? null : workerStr,
+      status:            parseStatus(a.account.status as Record<string, unknown>),
+      verificationScore: (a.account.verificationScore as number) ?? 0,
+      address:           (a.publicKey as PublicKey).toBase58(),
     };
   }
 
