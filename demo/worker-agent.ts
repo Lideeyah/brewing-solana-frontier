@@ -19,7 +19,8 @@
  *   WORKER_CAPABILITY=writing    Copywriting, content, translation
  */
 
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ override: true });
 import Anthropic from "@anthropic-ai/sdk";
 import {
   Connection,
@@ -41,7 +42,9 @@ import {
 // ── Config ────────────────────────────────────────────────────────────────────
 const CAPABILITY        = process.env.WORKER_CAPABILITY   ?? "research";
 const MIN_PAYMENT_USDC  = parseFloat(process.env.MIN_PAYMENT_USDC ?? "0.01");
-const POLL_INTERVAL_MS  = 10_000;
+// Stagger polls by capability so all 4 agents don't fire simultaneously
+const POLL_STAGGER: Record<string, number> = { research: 0, trading: 5_000, coding: 10_000, writing: 15_000 };
+const POLL_INTERVAL_MS  = 20_000;
 const PAYMENT_WAIT_MS   = 10 * 60_000;
 const PAYMENT_POLL_MS   = 8_000;
 const RPC_URL           = "https://api.devnet.solana.com";
@@ -177,6 +180,11 @@ async function main() {
   log(`USDC ATA      : ${workerAtaInfo.address.toBase58()}`);
   log(`USDC balance  : ${(Number(workerAtaInfo.amount) / 1_000_000).toFixed(6)} USDC`);
   console.log();
+  const stagger = POLL_STAGGER[CAPABILITY] ?? 0;
+  if (stagger > 0) {
+    log(`Stagger offset : +${stagger / 1000}s (spreads RPC load across agents)`);
+    await sleep(stagger);
+  }
   log(`Scanning for [cap:${CAPABILITY}] jobs every ${POLL_INTERVAL_MS / 1000}s…`);
   log("Press Ctrl+C to stop.\n");
 
