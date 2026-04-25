@@ -207,11 +207,15 @@ async function main() {
   }
   console.log();
 
-  // Fire all posts in parallel
+  // Fire all posts in parallel — give each a unique ID so parallel jobs
+  // don't collide on the same PDA (id is seconds-based; offset by index).
+  const baseId = Math.floor(Date.now() / 1000) % 99_000;
   const results = await Promise.allSettled(
-    specs.map((spec) =>
-      client.postJob(spec.task, spec.payment, { capability: spec.capability })
-        .then((r) => ({ ...r, spec }))
+    specs.map((spec, i) =>
+      client.postJob(spec.task, spec.payment, {
+        capability: spec.capability,
+        jobId: baseId + i,
+      }).then((r) => ({ ...r, spec }))
     )
   );
 
