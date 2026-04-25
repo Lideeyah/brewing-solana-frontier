@@ -21,12 +21,14 @@
  * release payments when workers deliver.
  */
 
-import "dotenv/config";
-import { Connection, Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { BrewingClient } from "../sdk/src/index";
+import dotenv from "dotenv";
+dotenv.config({ override: true });
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import { getOrCreateAssociatedTokenAccount } from "@solana/spl-token";
+import { BrewingClient, TREASURY_PUBKEY, DEVNET_USDC_MINT } from "../sdk/src/index";
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const POLL_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 20_000;
 const RPC_URL          = "https://api.devnet.solana.com";
 const EXPLORER_TX      = (sig: string) =>
   `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
@@ -82,6 +84,18 @@ async function main() {
     }
   } else {
     log(`SOL balance   : ${(lamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
+  }
+
+  // Ensure the protocol treasury's USDC token account exists on-chain.
+  // release_payment sends 2.5% there — if the ATA is missing the tx errors.
+  const usdcMint = new PublicKey(DEVNET_USDC_MINT);
+  try {
+    const treasuryAta = await getOrCreateAssociatedTokenAccount(
+      conn, posterKeypair, usdcMint, TREASURY_PUBKEY
+    );
+    log(`Treasury ATA  : ${treasuryAta.address.toBase58()} (ready)`);
+  } catch (e) {
+    log(`⚠️  Could not init treasury ATA: ${(e as Error).message}`);
   }
 
   console.log();
