@@ -90,6 +90,7 @@ async function main() {
 
   // Track released jobs so we never double-release
   const released = new Set<number>();
+  let pollCount = 0;
 
   // ── Poll loop ──────────────────────────────────────────────────────────────
   while (true) {
@@ -129,6 +130,18 @@ async function main() {
       }
     } catch (e) {
       err(`Poll error: ${(e as Error).message}`);
+    }
+
+    // ── Periodic SOL top-up (every 10 polls ≈ 100 s) ──────────────────────
+    if (++pollCount % 10 === 0) {
+      try {
+        const lamports = await conn.getBalance(posterKeypair.publicKey);
+        if (lamports < 0.05 * LAMPORTS_PER_SOL) {
+          log(`⚠️  SOL low (${(lamports / LAMPORTS_PER_SOL).toFixed(4)}) — requesting airdrop…`);
+          const ok = await requestAirdropWithRetry(posterKeypair.publicKey, conn);
+          if (!ok) log("⚠️  Airdrop failed — fund manually at https://faucet.solana.com");
+        }
+      } catch { /* non-fatal — skip this check and continue */ }
     }
 
     await sleep(POLL_INTERVAL_MS);

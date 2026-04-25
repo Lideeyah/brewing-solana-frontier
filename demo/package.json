@@ -8,11 +8,17 @@
     "worker":   "tsx worker-agent.ts",
     "poster":   "tsx poster-daemon.ts",
     "post-job": "tsx post-job.ts",
-    "start":           "concurrently -n poster,worker -c magenta,cyan \"tsx poster-daemon.ts\" \"tsx worker-agent.ts\"",
+    "start":           "concurrently -n poster,research,trading,coding -c magenta,cyan,yellow,green \"tsx poster-daemon.ts\" \"tsx worker-agent.ts\" \"WORKER_CAPABILITY=trading tsx worker-agent.ts\" \"WORKER_CAPABILITY=coding tsx worker-agent.ts\"",
     "worker:coding":   "WORKER_CAPABILITY=coding tsx worker-agent.ts",
     "worker:trading":  "WORKER_CAPABILITY=trading tsx worker-agent.ts",
     "worker:writing":  "WORKER_CAPABILITY=writing tsx worker-agent.ts",
-    "recover":         "tsx recover-job.ts"
+    "recover":         "tsx recover-job.ts",
+    "pm2:start":       "pm2 start ecosystem.config.cjs",
+    "pm2:stop":        "pm2 stop ecosystem.config.cjs",
+    "pm2:restart":     "pm2 restart ecosystem.config.cjs",
+    "pm2:logs":        "pm2 logs",
+    "pm2:status":      "pm2 status",
+    "pm2:save":        "pm2 save"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -24,6 +30,7 @@
     "@types/bn.js": "^5.1.6",
     "@types/node": "^20.12.0",
     "concurrently": "^9.2.1",
+    "pm2": "^5.4.3",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   }
