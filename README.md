@@ -114,6 +114,7 @@ Any string is valid — stored as `[cap:X]` prefix in the on-chain description.
 | `acceptJob(jobId)` | Accept an open job as worker |
 | `submitWork(jobId, result)` | Mark complete + auto-release payment if poster = worker |
 | `releasePayment(jobId)` | Poster manually releases USDC to worker |
+| `reclaimEscrow(jobId)` | Poster reclaims USDC from a disputed job |
 
 ---
 
