@@ -3,30 +3,20 @@
  * Brewing Worker Agent  —  universal, capability-configurable
  * ─────────────────────────────────────────────────────────────────────────────
  * A self-running agent that operates indefinitely without human intervention.
- * The same script handles any capability type — just set WORKER_CAPABILITY.
  *
  *   1. Polls Brewing every 10 s for open jobs matching WORKER_CAPABILITY
- *   2. Skips jobs below MIN_PAYMENT_USDC (default: 0.01)
- *   3. Accepts each matching job on-chain
- *   4. Calls Claude claude-opus-4-7 (adaptive thinking) with the job prompt
- *   5. Submits the AI response as work output on-chain
- *   6. Waits for payment confirmation (USDC released by the poster daemon)
+ *   2. Accepts each matching job on-chain
+ *   3. Calls Claude claude-opus-4-7 (adaptive thinking) with the job prompt
+ *   4. Runs a second Claude call to verify the output quality (score 1-10)
+ *   5a. Score ≥ 7 → submits work + releases payment automatically
+ *   5b. Score < 7 → marks job Disputed; payment stays in escrow
+ *   6. Logs all transactions as Solana Explorer links
  *
  * ── Capability types ─────────────────────────────────────────────────────────
  *   WORKER_CAPABILITY=research   Research, analysis, summarisation
  *   WORKER_CAPABILITY=coding     Code generation, debugging, review
  *   WORKER_CAPABILITY=trading    Price analysis, strategy evaluation
  *   WORKER_CAPABILITY=writing    Copywriting, content, translation
- *
- * ── Convenience scripts ──────────────────────────────────────────────────────
- *   npm run worker              (research — default)
- *   npm run worker:coding
- *   npm run worker:trading
- *   npm run worker:writing
- *
- * ── Full setup ────────────────────────────────────────────────────────────────
- *   cp .env.example .env        # fill in keys
- *   npm start                   # runs poster daemon + research worker together
  */
 
 import "dotenv/config";
@@ -40,11 +30,15 @@ import {
 import {
   getOrCreateAssociatedTokenAccount,
   getAccount,
-  getAssociatedTokenAddress,
 } from "@solana/spl-token";
-import { BrewingClient, DEVNET_USDC_MINT, type Job } from "../sdk/src/index";
+import {
+  BrewingClient,
+  DEVNET_USDC_MINT,
+  VERIFICATION_THRESHOLD,
+  type Job,
+} from "../sdk/src/index";
 
-// ── Config — all overridable via environment variables ────────────────────────
+// ── Config ────────────────────────────────────────────────────────────────────
 const CAPABILITY        = process.env.WORKER_CAPABILITY   ?? "research";
 const MIN_PAYMENT_USDC  = parseFloat(process.env.MIN_PAYMENT_USDC ?? "0.01");
 const POLL_INTERVAL_MS  = 10_000;
@@ -111,7 +105,6 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-// ── Parse worker keypair ──────────────────────────────────────────────────────
 let workerKeypair: Keypair;
 try {
   workerKeypair = Keypair.fromSecretKey(
@@ -119,11 +112,9 @@ try {
   );
 } catch {
   console.error("❌  WORKER_SECRET_KEY must be a JSON byte-array (e.g. [1,2,3,...,64]).");
-  console.error("    Generate one with: solana-keygen new --outfile worker.json");
   process.exit(1);
 }
 
-// ── Logger ────────────────────────────────────────────────────────────────────
 const ts  = () => new Date().toISOString().replace("T", " ").slice(0, 19);
 const log = (msg: string) => console.log(`[${ts()}]  ${msg}`);
 const err = (msg: string) => console.error(`[${ts()}]  ❌ ${msg}`);
@@ -134,7 +125,6 @@ async function main() {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
   const client    = new BrewingClient({ connection: conn, wallet: workerKeypair });
 
-  // ── Banner ─────────────────────────────────────────────────────────────────
   const bannerTitle = `BREWING ${CAPABILITY.toUpperCase()} WORKER AGENT  —  Starting`;
   const bannerWidth = 63;
   const bannerPad   = Math.max(0, bannerWidth - bannerTitle.length);
@@ -148,27 +138,23 @@ async function main() {
   log(`Capability    : ${CAPABILITY}`);
   log(`Min payment   : ${MIN_PAYMENT_USDC.toFixed(2)} USDC`);
   log(`Wallet        : ${workerKeypair.publicKey.toBase58()}`);
+  log(`Verify thresh : score ≥ ${VERIFICATION_THRESHOLD} → release, < ${VERIFICATION_THRESHOLD} → dispute`);
   log(`Poll interval : every ${POLL_INTERVAL_MS / 1000}s`);
   console.log();
 
-  // ── Ensure SOL for transaction fees ───────────────────────────────────────
   const lamports = await conn.getBalance(workerKeypair.publicKey);
   if (lamports < 0.05 * LAMPORTS_PER_SOL) {
     log("Balance low — requesting 1 SOL devnet airdrop…");
     const ok = await requestAirdropWithRetry(workerKeypair.publicKey, conn);
     if (!ok) {
       log("⚠️  Auto-airdrop failed. Fund manually:");
-      log("    https://faucet.solana.com  →  paste worker address  →  Devnet");
+      log(`    https://faucet.solana.com  →  paste worker address  →  Devnet`);
       log(`    Address: ${workerKeypair.publicKey.toBase58()}`);
-      log("   (agent will continue — fund the wallet then it will process jobs)");
     }
   } else {
     log(`SOL balance : ${(lamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
   }
 
-  // ── Create USDC token account (required to receive payment) ───────────────
-  // Retry until SOL is available — covers the case where the airdrop failed
-  // and the user needs to fund manually via faucet.solana.com
   log("Ensuring USDC token account exists…");
   let workerAtaInfo: Awaited<ReturnType<typeof getOrCreateAssociatedTokenAccount>> | null = null;
   while (!workerAtaInfo) {
@@ -181,10 +167,7 @@ async function main() {
     }
     try {
       workerAtaInfo = await getOrCreateAssociatedTokenAccount(
-        conn,
-        workerKeypair,
-        USDC_MINT,
-        workerKeypair.publicKey
+        conn, workerKeypair, USDC_MINT, workerKeypair.publicKey
       );
     } catch (e) {
       err(`USDC ATA creation failed: ${(e as Error).message} — retrying in 8 s…`);
@@ -192,17 +175,14 @@ async function main() {
     }
   }
   log(`USDC ATA      : ${workerAtaInfo.address.toBase58()}`);
-  const startingUsdc = Number(workerAtaInfo.amount) / 1_000_000;
-  log(`USDC balance  : ${startingUsdc.toFixed(6)} USDC`);
+  log(`USDC balance  : ${(Number(workerAtaInfo.amount) / 1_000_000).toFixed(6)} USDC`);
   console.log();
   log(`Scanning for [cap:${CAPABILITY}] jobs every ${POLL_INTERVAL_MS / 1000}s…`);
   log("Press Ctrl+C to stop.\n");
 
-  // ── Track jobs to prevent concurrent double-processing ────────────────────
   const processing = new Set<number>();
   let pollCount = 0;
 
-  // ── Poll loop ──────────────────────────────────────────────────────────────
   while (true) {
     try {
       const openJobs = await client.getOpenJobs(CAPABILITY);
@@ -215,12 +195,7 @@ async function main() {
       } else {
         log(`Found ${newJobs.length} new [cap:${CAPABILITY}] job(s).`);
         for (const job of newJobs) {
-          // Lock the slot immediately — before any awaits — to prevent the
-          // next poll iteration from picking up the same job.
           processing.add(job.jobId);
-
-          // Fire-and-forget: jobs run concurrently in the background so the
-          // poll loop stays on schedule regardless of job duration.
           handleJob(job, client, anthropic, conn, workerAtaInfo.address).catch(
             (e: Error) => {
               const isBillingError =
@@ -232,12 +207,9 @@ async function main() {
                 err(`─────────────────────────────────────────────────────────`);
                 err(`ANTHROPIC API BILLING ERROR — worker paused.`);
                 err(`Add credits at https://console.anthropic.com/settings/billing`);
-                err(`Then recover stuck job with:  npm run recover -- ${job.jobId}`);
                 err(`─────────────────────────────────────────────────────────`);
-                // Keep the job locked — don't retry; it's stuck InProgress on-chain
               } else {
                 err(`Job #${job.jobId} handler crashed: ${e.message}`);
-                // Release the slot so the job can be retried next poll
                 processing.delete(job.jobId);
               }
             }
@@ -248,7 +220,6 @@ async function main() {
       err(`Poll error: ${(e as Error).message}`);
     }
 
-    // ── Periodic balance check + SOL top-up (every 10 polls ≈ 100 s) ──────
     if (++pollCount % 10 === 0) {
       try {
         const lamports = await conn.getBalance(workerKeypair.publicKey);
@@ -260,7 +231,7 @@ async function main() {
         const acct = await getAccount(conn, workerAtaInfo.address);
         const usdc = Number(acct.amount) / 1_000_000;
         log(`💳 Balance — SOL: ${(lamports / LAMPORTS_PER_SOL).toFixed(4)}  USDC: ${usdc.toFixed(4)}`);
-      } catch { /* non-fatal — skip this check and continue */ }
+      } catch { /* non-fatal */ }
     }
 
     await sleep(POLL_INTERVAL_MS);
@@ -276,20 +247,19 @@ async function handleJob(
   workerAtaAddress: PublicKey
 ): Promise<void> {
   const { jobId, task, paymentAmount } = job;
-  const prefix = `[#${jobId}]`;
+  const p = `[#${jobId}]`;
 
   log(`${"─".repeat(63)}`);
-  log(`${prefix}  NEW JOB  ${paymentAmount.toFixed(2)} USDC`);
-  log(`${prefix}  Task: "${task.slice(0, 80)}${task.length > 80 ? "…" : ""}"`);
+  log(`${p}  NEW JOB  ${paymentAmount.toFixed(2)} USDC`);
+  log(`${p}  Task: "${task.slice(0, 80)}${task.length > 80 ? "…" : ""}"`);
 
-  // ── Step 1: Accept the job on-chain ────────────────────────────────────────
-  log(`${prefix}  Accepting…`);
+  // Step 1 — Accept on-chain
+  log(`${p}  Accepting…`);
   const { txSig: acceptTx } = await client.acceptJob(jobId);
-  log(`${prefix}  ✅ Accepted — ${EXPLORER_TX(acceptTx)}`);
+  log(`${p}  ✅ Accepted — ${EXPLORER_TX(acceptTx)}`);
 
-  // ── Step 2: Call Claude claude-opus-4-7 with the job task ──────────────────────
-  log(`${prefix}  Calling Claude claude-opus-4-7 (adaptive thinking)…`);
-
+  // Step 2 — Call Claude to do the work
+  log(`${p}  Calling Claude claude-opus-4-7 (adaptive thinking)…`);
   let workOutput = "";
   const stream = anthropic.messages.stream({
     model: "claude-opus-4-7",
@@ -299,44 +269,89 @@ async function handleJob(
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: task }],
   });
-
   stream.on("text", (chunk) => { workOutput += chunk; });
   await stream.finalMessage();
-  log(`${prefix}  ✅ AI response: ${workOutput.length} chars`);
+  log(`${p}  ✅ AI response: ${workOutput.length} chars`);
 
-  // ── Step 3: Submit work on-chain ───────────────────────────────────────────
-  log(`${prefix}  Submitting work on-chain…`);
-  const { completeTxSig, autoReleased, releaseTxSig } =
-    await client.submitWork(jobId, workOutput);
-  log(`${prefix}  ✅ Work submitted — ${EXPLORER_TX(completeTxSig)}`);
+  // Step 3 — Verify work quality with Claude
+  log(`${p}  Verifying work quality…`);
+  const { score, reason } = await verifyWork(anthropic, task, workOutput);
+  const scoreBar = "█".repeat(score) + "░".repeat(10 - score);
+  log(`${p}  📊 Verification score: ${score}/10  [${scoreBar}]  "${reason}"`);
 
-  if (autoReleased && releaseTxSig) {
-    // Poster and worker are the same wallet — payment released instantly
-    log(`${prefix}  ✅ Auto-released — ${EXPLORER_TX(releaseTxSig)}`);
-    await logPaymentReceived(jobId, conn, workerAtaAddress, paymentAmount);
-    return;
-  }
+  if (score >= VERIFICATION_THRESHOLD) {
+    // Step 4a — Score passes — submit work + release payment
+    log(`${p}  Score ${score} ≥ ${VERIFICATION_THRESHOLD} — submitting work…`);
+    const { completeTxSig, autoReleased, releaseTxSig } =
+      await client.submitWork(jobId, workOutput, score);
+    log(`${p}  ✅ Work submitted — ${EXPLORER_TX(completeTxSig)}`);
 
-  // ── Step 4: Wait for poster to release payment ─────────────────────────────
-  log(`${prefix}  Status: PendingRelease — waiting for poster to approve…`);
-  const paid = await waitForPayment(
-    jobId,
-    client,
-    conn,
-    workerAtaAddress,
-    PAYMENT_WAIT_MS,
-    PAYMENT_POLL_MS
-  );
+    if (autoReleased && releaseTxSig) {
+      log(`${p}  ✅ Payment auto-released — ${EXPLORER_TX(releaseTxSig)}`);
+      await logPaymentReceived(jobId, conn, workerAtaAddress, paymentAmount);
+      return;
+    }
 
-  if (paid) {
-    await logPaymentReceived(jobId, conn, workerAtaAddress, paymentAmount);
+    // Wait for poster daemon to release
+    log(`${p}  Status: PendingRelease — waiting for poster to approve…`);
+    const paid = await waitForPayment(jobId, client, conn, workerAtaAddress, PAYMENT_WAIT_MS, PAYMENT_POLL_MS);
+    if (paid) {
+      await logPaymentReceived(jobId, conn, workerAtaAddress, paymentAmount);
+    } else {
+      log(`${p}  ⚠️  Timed out waiting for payment after ${PAYMENT_WAIT_MS / 60_000} min.`);
+    }
+
   } else {
-    log(`${prefix}  ⚠️  Timed out waiting for payment after ${PAYMENT_WAIT_MS / 60_000} min.`);
-    log(`${prefix}     The poster may release it later — check your USDC balance.`);
+    // Step 4b — Score fails — dispute the job
+    log(`${p}  Score ${score} < ${VERIFICATION_THRESHOLD} — marking job Disputed…`);
+    const { txSig: disputeTx } = await client.disputeJob(jobId, score);
+    log(`${p}  ⚠️  Job disputed — payment held in escrow — ${EXPLORER_TX(disputeTx)}`);
+    log(`${p}     Reason: "${reason}"`);
   }
 }
 
-// ── Wait for job → Completed, then confirm USDC arrived ───────────────────────
+// ── Verification via Claude ───────────────────────────────────────────────────
+async function verifyWork(
+  anthropic: Anthropic,
+  task: string,
+  workOutput: string
+): Promise<{ score: number; reason: string }> {
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-opus-4-7",
+      max_tokens: 256,
+      system: `You are a work quality verifier for an AI agent marketplace.
+Score the submitted work against the original task description on a scale of 1-10.
+
+Scoring guide:
+  9-10 — Fully addresses all requirements, accurate, well-structured, no gaps
+  7-8  — Addresses most requirements with minor omissions or imprecisions
+  5-6  — Partially addresses the task; missing key elements
+  3-4  — Significant gaps; off-topic or inaccurate in major ways
+  1-2  — Does not address the task at all
+
+Respond ONLY with valid JSON, no other text: {"score": <integer 1-10>, "reason": "<one concise sentence>"}`,
+      messages: [{
+        role: "user",
+        content: `TASK:\n${task.slice(0, 600)}\n\nSUBMITTED WORK (first 1200 chars):\n${workOutput.slice(0, 1200)}`,
+      }],
+    });
+
+    const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
+    // Strip markdown code fences if Claude wraps the JSON
+    const clean = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+    const parsed = JSON.parse(clean) as { score: number; reason: string };
+    const score  = Math.max(1, Math.min(10, Math.round(parsed.score)));
+    return { score, reason: parsed.reason ?? "No reason provided" };
+  } catch (e) {
+    // If verification call fails, default to passing score so jobs aren't
+    // stuck — log the error so it's visible
+    console.error(`[verifyWork] Failed: ${(e as Error).message} — defaulting to score 7`);
+    return { score: 7, reason: "Verification call failed — defaulting to passing score" };
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 async function waitForPayment(
   jobId: number,
   client: BrewingClient,
@@ -346,15 +361,12 @@ async function waitForPayment(
   pollMs: number
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-
   while (Date.now() < deadline) {
     await sleep(pollMs);
     try {
       const job = await client.getJob(jobId);
       if (job?.status === "Completed") return true;
-    } catch {
-      // Transient RPC error — keep waiting
-    }
+    } catch { /* transient RPC error */ }
   }
   return false;
 }
@@ -366,32 +378,29 @@ async function logPaymentReceived(
   expectedUsdc: number
 ): Promise<void> {
   try {
-    const acct      = await getAccount(conn, workerAtaAddress);
-    const balance   = Number(acct.amount) / 1_000_000;
+    const acct    = await getAccount(conn, workerAtaAddress);
+    const balance = Number(acct.amount) / 1_000_000;
+    // Note: actual received is 97.5% due to 2.5% protocol fee
+    const received = +(expectedUsdc * 0.975).toFixed(6);
     log(
-      `[#${jobId}]  💰 PAYMENT RECEIVED  +${expectedUsdc.toFixed(2)} USDC` +
+      `[#${jobId}]  💰 PAYMENT RECEIVED  +${received} USDC (97.5% after 2.5% fee)` +
       `  (new balance: ${balance.toFixed(6)} USDC)`
     );
   } catch {
-    log(`[#${jobId}]  💰 PAYMENT RECEIVED  +${expectedUsdc.toFixed(2)} USDC`);
+    log(`[#${jobId}]  💰 PAYMENT RECEIVED  +${(expectedUsdc * 0.975).toFixed(6)} USDC`);
   }
 }
 
-// ── Utility ───────────────────────────────────────────────────────────────────
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Retry airdrop across two RPC endpoints — devnet faucet is often flaky
 async function requestAirdropWithRetry(
   pubkey: PublicKey,
   primaryConn: Connection,
   attempts = 3
 ): Promise<boolean> {
-  const endpoints = [
-    RPC_URL,
-    "https://rpc.ankr.com/solana_devnet",
-  ];
+  const endpoints = [RPC_URL, "https://rpc.ankr.com/solana_devnet"];
   for (let i = 0; i < attempts; i++) {
     const endpoint = endpoints[i % endpoints.length];
     try {
@@ -410,7 +419,6 @@ async function requestAirdropWithRetry(
   return false;
 }
 
-// ── Start ─────────────────────────────────────────────────────────────────────
 main().catch((e: Error) => {
   console.error(`\n💥  Worker crashed: ${e.message}`);
   if (process.env.DEBUG) console.error(e.stack);

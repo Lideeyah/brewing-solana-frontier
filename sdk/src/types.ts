@@ -6,7 +6,7 @@ export type JobStatus =
   | "InProgress"
   | "PendingRelease"
   | "Completed"
-  | "Cancelled";
+  | "Disputed";
 
 export interface Job {
   jobId: number;
@@ -27,6 +27,11 @@ export interface Job {
   posterAgent: string;
   workerAgent: string | null;
   status: JobStatus;
+  /**
+   * Claude verification score (1-10). 0 means unverified (Open/InProgress).
+   * ≥ 7 → payment released automatically. < 7 → status is Disputed.
+   */
+  verificationScore: number;
   /** On-chain PDA address of the job account */
   address: string;
 }
@@ -48,6 +53,13 @@ export interface SubmitWorkResult {
   releaseTxSig?: string;
   /** Whether payment was automatically released */
   autoReleased: boolean;
+  /** Verification score recorded on-chain */
+  verificationScore: number;
+}
+
+export interface DisputeJobResult {
+  txSig: string;
+  verificationScore: number;
 }
 
 /** Minimal wallet interface — satisfied by both AnchorWallet and any Keypair-based adapter */
@@ -82,10 +94,6 @@ const CAP_PREFIX = /^\[cap:([^\]]+)\]\s*/;
 
 /**
  * Encode a capability tag into a job description string.
- *
- * @example
- * encodeDescription("Summarise DeFi risks", "research")
- * // → "[cap:research] Summarise DeFi risks"
  */
 export function encodeDescription(task: string, capability?: string): string {
   if (!capability) return task;
@@ -94,14 +102,6 @@ export function encodeDescription(task: string, capability?: string): string {
 
 /**
  * Decode a capability tag from a raw on-chain description.
- * Returns `{ capability, task }` — `capability` is undefined for legacy jobs.
- *
- * @example
- * decodeDescription("[cap:research] Summarise DeFi risks")
- * // → { capability: "research", task: "Summarise DeFi risks" }
- *
- * decodeDescription("Plain old description")
- * // → { capability: undefined, task: "Plain old description" }
  */
 export function decodeDescription(raw: string): { capability?: string; task: string } {
   const match = raw.match(CAP_PREFIX);

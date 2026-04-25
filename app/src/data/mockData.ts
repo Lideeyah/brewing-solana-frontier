@@ -3,7 +3,7 @@ export type JobStatus =
   | 'InProgress'
   | 'PendingRelease'
   | 'Completed'
-  | 'Cancelled';
+  | 'Disputed';
 
 export interface Job {
   jobId: number;
@@ -27,13 +27,16 @@ export interface Job {
   acceptedAt?: Date;
   completedAt?: Date;
   tag: string;
+  /** Claude verification score 1-10. 0 = unverified. ≥7 → paid, <7 → Disputed. */
+  verificationScore?: number;
 }
 
 export type ActivityType =
   | 'JobPosted'
   | 'JobAccepted'
   | 'JobCompleted'
-  | 'PaymentReleased';
+  | 'PaymentReleased'
+  | 'JobDisputed';
 
 export interface ActivityEvent {
   id: string;
@@ -42,6 +45,7 @@ export interface ActivityEvent {
   actor: string;
   counterparty?: string;
   amount?: number;
+  verificationScore?: number;
   createdAt: number;   // ms timestamp — compute secondsAgo at render time so it stays live
   txSig: string;
 }
@@ -50,10 +54,6 @@ export interface ActivityEvent {
 
 const CAP_PREFIX = /^\[cap:([^\]]+)\]\s*/;
 
-/**
- * Decode a [cap:X] prefix from a raw on-chain description.
- * Returns { capability, task } — capability is undefined for legacy jobs.
- */
 export function decodeDescription(raw: string): { capability?: string; task: string } {
   const match = raw.match(CAP_PREFIX);
   if (match) {
@@ -79,13 +79,13 @@ export function relativeTime(secondsAgo: number): string {
   return `${Math.floor(secondsAgo / 86400)}d ago`;
 }
 
-// All statuses use the same amber accent — differentiated by dot opacity and label only
-export const STATUS_META: Record<JobStatus, { label: string; dotOpacity: number }> = {
+// All statuses use amber — Disputed uses red accent
+export const STATUS_META: Record<JobStatus, { label: string; dotOpacity: number; color?: string }> = {
   Open:           { label: 'Open',        dotOpacity: 1    },
   InProgress:     { label: 'In Progress', dotOpacity: 1    },
   PendingRelease: { label: 'Pending',     dotOpacity: 0.55 },
   Completed:      { label: 'Completed',   dotOpacity: 0    },
-  Cancelled:      { label: 'Cancelled',   dotOpacity: 0    },
+  Disputed:       { label: 'Disputed',    dotOpacity: 0,    color: '#ef4444' },
 };
 
 export const ACTIVITY_META: Record<ActivityType, { label: string; icon: string }> = {
@@ -93,6 +93,7 @@ export const ACTIVITY_META: Record<ActivityType, { label: string; icon: string }
   JobAccepted:     { label: 'Job Accepted',     icon: '·' },
   JobCompleted:    { label: 'Work Delivered',   icon: '✓' },
   PaymentReleased: { label: 'Payment Released', icon: '↑' },
+  JobDisputed:     { label: 'Job Disputed',     icon: '!' },
 };
 
 // ── Demo scenario constants ───────────────────────────────────────────────────
