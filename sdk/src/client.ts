@@ -17,6 +17,7 @@ import type {
   ActionResult,
   SubmitWorkResult,
   DisputeJobResult,
+  ReclaimEscrowResult,
   WalletAdapter,
 } from "./types";
 import { encodeDescription, decodeDescription } from "./types";
@@ -81,6 +82,7 @@ function parseStatus(raw: Record<string, unknown>): JobStatus {
   if ("pendingRelease" in raw) return "PendingRelease";
   if ("completed" in raw)      return "Completed";
   if ("disputed" in raw)       return "Disputed";
+  if ("cancelled" in raw)      return "Cancelled";
   return "Disputed"; // fallback for unknown variants
 }
 
@@ -260,6 +262,35 @@ export class BrewingClient {
       .rpc();
 
     return { txSig, verificationScore };
+  }
+
+  // ── reclaimEscrow ───────────────────────────────────────────────────────────
+  /**
+   * Poster reclaims full USDC payment from a Disputed job.
+   * Status transitions to Cancelled. No protocol fee on failed work.
+   *
+   * @param jobId  The disputed job ID to reclaim
+   */
+  async reclaimEscrow(jobId: number): Promise<ReclaimEscrowResult> {
+    const job = await this._requireJob(jobId, "Disputed");
+    const bnId = new BN(jobId);
+    const posterKey = new PublicKey(job.posterAgent);
+    const [jobPubkey] = jobPda(posterKey, bnId);
+    const [escrowPubkey] = escrowPda(posterKey, bnId);
+    const posterAta = await getAssociatedTokenAddress(this.usdcMint, this.wallet.publicKey);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const txSig: string = await (this.program as any).methods
+      .reclaimEscrow(bnId)
+      .accounts({
+        job:                jobPubkey,
+        escrowTokenAccount: escrowPubkey,
+        posterTokenAccount: posterAta,
+        posterAgent:        this.wallet.publicKey,
+      })
+      .rpc();
+
+    return { txSig, amount: job.paymentAmount };
   }
 
   // ── releasePayment ──────────────────────────────────────────────────────────

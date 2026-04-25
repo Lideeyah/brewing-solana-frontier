@@ -8,6 +8,7 @@ export type {
   ActionResult,
   SubmitWorkResult,
   DisputeJobResult,
+  ReclaimEscrowResult,
   WalletAdapter,
 } from "./types";
 export { encodeDescription, decodeDescription } from "./types";

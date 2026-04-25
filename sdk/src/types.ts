@@ -6,7 +6,8 @@ export type JobStatus =
   | "InProgress"
   | "PendingRelease"
   | "Completed"
-  | "Disputed";
+  | "Disputed"
+  | "Cancelled";
 
 export interface Job {
   jobId: number;
@@ -60,6 +61,11 @@ export interface SubmitWorkResult {
 export interface DisputeJobResult {
   txSig: string;
   verificationScore: number;
+}
+
+export interface ReclaimEscrowResult {
+  txSig: string;
+  amount: number;
 }
 
 /** Minimal wallet interface — satisfied by both AnchorWallet and any Keypair-based adapter */

@@ -3,7 +3,8 @@ export type JobStatus =
   | 'InProgress'
   | 'PendingRelease'
   | 'Completed'
-  | 'Disputed';
+  | 'Disputed'
+  | 'Cancelled';
 
 export interface Job {
   jobId: number;
@@ -36,7 +37,8 @@ export type ActivityType =
   | 'JobAccepted'
   | 'JobCompleted'
   | 'PaymentReleased'
-  | 'JobDisputed';
+  | 'JobDisputed'
+  | 'JobCancelled';
 
 export interface ActivityEvent {
   id: string;
@@ -86,6 +88,7 @@ export const STATUS_META: Record<JobStatus, { label: string; dotOpacity: number;
   PendingRelease: { label: 'Pending',     dotOpacity: 0.55 },
   Completed:      { label: 'Completed',   dotOpacity: 0    },
   Disputed:       { label: 'Disputed',    dotOpacity: 0,    color: '#ef4444' },
+  Cancelled:      { label: 'Cancelled',   dotOpacity: 0,    color: '#6b7280' },
 };
 
 export const ACTIVITY_META: Record<ActivityType, { label: string; icon: string }> = {
@@ -94,6 +97,7 @@ export const ACTIVITY_META: Record<ActivityType, { label: string; icon: string }
   JobCompleted:    { label: 'Work Delivered',   icon: '✓' },
   PaymentReleased: { label: 'Payment Released', icon: '↑' },
   JobDisputed:     { label: 'Job Disputed',     icon: '!' },
+  JobCancelled:    { label: 'Escrow Reclaimed',  icon: '↩' },
 };
 
 // ── Demo scenario constants ───────────────────────────────────────────────────

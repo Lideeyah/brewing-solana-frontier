@@ -147,6 +147,45 @@ pub mod brewing {
         Ok(())
     }
 
+    /// Poster reclaims USDC from a Disputed job.
+    /// Full payment returns to the poster — no protocol fee on failed work.
+    pub fn reclaim_escrow(ctx: Context<ReclaimEscrow>, job_id: u64) -> Result<()> {
+        let job = &mut ctx.accounts.job;
+        let amount = job.payment_amount;
+        let poster_key = job.poster_agent;
+
+        let job_id_bytes = job_id.to_le_bytes();
+        let escrow_seeds: &[&[u8]] = &[
+            ESCROW_SEED,
+            poster_key.as_ref(),
+            &job_id_bytes,
+            &[job.escrow_bump],
+        ];
+        let signer_seeds = &[escrow_seeds];
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.key(),
+                Transfer {
+                    from:      ctx.accounts.escrow_token_account.to_account_info(),
+                    to:        ctx.accounts.poster_token_account.to_account_info(),
+                    authority: ctx.accounts.escrow_token_account.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            amount,
+        )?;
+
+        job.status = JobStatus::Cancelled;
+
+        emit!(EscrowReclaimed {
+            job_id,
+            poster: poster_key,
+            amount,
+        });
+        Ok(())
+    }
+
     /// Release payment from escrow.
     ///
     /// Splits the payment:
@@ -309,6 +348,38 @@ pub struct DisputeJob<'info> {
 
 #[derive(Accounts)]
 #[instruction(job_id: u64)]
+pub struct ReclaimEscrow<'info> {
+    #[account(
+        mut,
+        seeds = [JOB_SEED, poster_agent.key().as_ref(), &job_id.to_le_bytes()],
+        bump  = job.bump,
+        has_one = poster_agent @ BrewingError::UnauthorizedPoster,
+        constraint = job.status == JobStatus::Disputed @ BrewingError::JobNotDisputed
+    )]
+    pub job: Account<'info, JobAccount>,
+
+    #[account(
+        mut,
+        seeds = [ESCROW_SEED, poster_agent.key().as_ref(), &job_id.to_le_bytes()],
+        bump  = job.escrow_bump
+    )]
+    pub escrow_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = poster_token_account.owner == poster_agent.key(),
+        constraint = poster_token_account.mint  == escrow_token_account.mint
+    )]
+    pub poster_token_account: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub poster_agent: Signer<'info>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+#[instruction(job_id: u64)]
 pub struct ReleasePayment<'info> {
     #[account(
         mut,
@@ -382,6 +453,7 @@ pub enum JobStatus {
     PendingRelease, // 2 — worker marked complete, awaiting poster approval
     Completed,      // 3 — payment released
     Disputed,       // 4 — verification score below threshold; payment in escrow
+    Cancelled,      // 5 — disputed job reclaimed by poster; funds returned
 }
 
 // ── Events ────────────────────────────────────────────────────────────────────
@@ -411,6 +483,13 @@ pub struct JobDisputed {
     pub job_id:             u64,
     pub worker_agent:       Pubkey,
     pub verification_score: u8,
+}
+
+#[event]
+pub struct EscrowReclaimed {
+    pub job_id:  u64,
+    pub poster:  Pubkey,
+    pub amount:  u64,
 }
 
 #[event]
@@ -445,4 +524,6 @@ pub enum BrewingError {
     InvalidTreasury,
     #[msg("Verification score must be between 0 and 10")]
     InvalidScore,
+    #[msg("Job is not in Disputed status")]
+    JobNotDisputed,
 }
