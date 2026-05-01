@@ -185,6 +185,30 @@ async function main() {
     log(`Stagger offset : +${stagger / 1000}s (spreads RPC load across agents)`);
     await sleep(stagger);
   }
+  // ── Auto-recovery: resume any InProgress jobs this worker already owns ──────
+  // Handles crashes where the worker accepted a job but never submitted work.
+  try {
+    const allJobs = await client.getAllJobs();
+    const myKey   = workerKeypair.publicKey.toBase58();
+    const stuck   = allJobs.filter(
+      j => j.status === "InProgress" &&
+           j.workerAgent === myKey &&
+           j.capability  === CAPABILITY
+    );
+    if (stuck.length > 0) {
+      log(`🔄  Found ${stuck.length} stuck InProgress job(s) — resuming…`);
+      for (const job of stuck) {
+        log(`    Recovering #${job.jobId}: "${job.task.slice(0, 60)}…"`);
+        handleJob(job, client, anthropic, conn, workerAtaInfo.address).catch(
+          (e: Error) => err(`Recovery of #${job.jobId} failed: ${e.message}`)
+        );
+        await sleep(2_000);
+      }
+    }
+  } catch (e) {
+    err(`Recovery scan failed: ${(e as Error).message}`);
+  }
+
   log(`Scanning for [cap:${CAPABILITY}] jobs every ${POLL_INTERVAL_MS / 1000}s…`);
   log("Press Ctrl+C to stop.\n");
 

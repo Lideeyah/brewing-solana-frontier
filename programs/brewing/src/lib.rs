@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 declare_id!("BsFiGxfJ9Spn5kp6bJoCxAwswKRskpTiPodNt8EA6QdM");
 
@@ -14,6 +14,9 @@ pub const FEE_DENOMINATOR: u64 = 1_000;
 
 /// Protocol treasury — receives 2.5% of every released payment.
 pub const TREASURY: Pubkey = pubkey!("2WujcJGNEr45mikPcyR4jY8WVKXoADakYyh7UF6Jvspj");
+
+/// Devnet USDC mint — only this token is accepted as payment.
+pub const USDC_MINT: Pubkey = pubkey!("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
 
 // ── Program ──────────────────────────────────────────────────────────────────
 #[program]
@@ -293,8 +296,9 @@ pub struct PostJob<'info> {
     )]
     pub poster_token_account: Account<'info, TokenAccount>,
 
-    /// CHECK: validated via token account mint constraints above
-    pub usdc_mint: UncheckedAccount<'info>,
+    /// USDC mint — hardcoded to devnet USDC; rejects any other token.
+    #[account(address = USDC_MINT @ BrewingError::InvalidMint)]
+    pub usdc_mint: Account<'info, Mint>,
 
     #[account(mut)]
     pub poster_agent: Signer<'info>,
@@ -526,4 +530,6 @@ pub enum BrewingError {
     InvalidScore,
     #[msg("Job is not in Disputed status")]
     JobNotDisputed,
+    #[msg("Payment token must be devnet USDC (4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU)")]
+    InvalidMint,
 }

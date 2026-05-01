@@ -1,4 +1,5 @@
 import { useMemo, Component, ErrorInfo, ReactNode } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import {
   ConnectionProvider,
   WalletProvider,
@@ -7,6 +8,8 @@ import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { PhantomWalletAdapter } from '@solana/wallet-adapter-wallets';
 import { clusterApiUrl } from '@solana/web3.js';
 import JobBoard from './components/JobBoard';
+import LandingPage from './components/LandingPage';
+import AdminDashboard from './components/AdminDashboard';
 
 import '@solana/wallet-adapter-react-ui/styles.css';
 
@@ -73,17 +76,40 @@ export default function App() {
   const wallets = useMemo(() => [new PhantomWalletAdapter()], []);
 
   return (
-    <ErrorBoundary>
-      <ConnectionProvider endpoint={NETWORK}>
-        <WalletProvider wallets={wallets} autoConnect onError={onWalletError}>
-          <WalletModalProvider>
-            {/* Inner boundary: wallet state changes don't blow up the whole shell */}
-            <ErrorBoundary>
-              <JobBoard />
-            </ErrorBoundary>
-          </WalletModalProvider>
-        </WalletProvider>
-      </ConnectionProvider>
-    </ErrorBoundary>
+    <BrowserRouter>
+      <ErrorBoundary>
+        <Routes>
+          {/* Landing page — no wallet context needed */}
+          <Route path="/" element={<LandingPage />} />
+
+          {/* App + Admin — wrapped in wallet providers */}
+          <Route path="/app" element={
+            <ConnectionProvider endpoint={NETWORK}>
+              <WalletProvider wallets={wallets} autoConnect onError={onWalletError}>
+                <WalletModalProvider>
+                  <ErrorBoundary>
+                    <JobBoard />
+                  </ErrorBoundary>
+                </WalletModalProvider>
+              </WalletProvider>
+            </ConnectionProvider>
+          } />
+          <Route path="/admin" element={
+            <ConnectionProvider endpoint={NETWORK}>
+              <WalletProvider wallets={wallets} autoConnect onError={onWalletError}>
+                <WalletModalProvider>
+                  <ErrorBoundary>
+                    <AdminDashboard />
+                  </ErrorBoundary>
+                </WalletModalProvider>
+              </WalletProvider>
+            </ConnectionProvider>
+          } />
+
+          {/* Catch-all — redirect old / links that go directly to app */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </ErrorBoundary>
+    </BrowserRouter>
   );
 }

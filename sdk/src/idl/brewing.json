@@ -254,7 +254,11 @@
           "writable": true
         },
         {
-          "name": "usdc_mint"
+          "name": "usdc_mint",
+          "docs": [
+            "USDC mint — hardcoded to devnet USDC; rejects any other token."
+          ],
+          "address": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
         },
         {
           "name": "poster_agent",
@@ -634,6 +638,11 @@
       "code": 6010,
       "name": "JobNotDisputed",
       "msg": "Job is not in Disputed status"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidMint",
+      "msg": "Payment token must be devnet USDC (4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU)"
     }
   ],
   "types": [
