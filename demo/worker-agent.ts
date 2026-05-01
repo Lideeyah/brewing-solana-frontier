@@ -187,6 +187,7 @@ async function main() {
   }
   // ── Auto-recovery: resume any InProgress jobs this worker already owns ──────
   // Handles crashes where the worker accepted a job but never submitted work.
+  // Uses recoverJob() which skips acceptJob() since the job is already accepted.
   try {
     const allJobs = await client.getAllJobs();
     const myKey   = workerKeypair.publicKey.toBase58();
@@ -199,7 +200,7 @@ async function main() {
       log(`🔄  Found ${stuck.length} stuck InProgress job(s) — resuming…`);
       for (const job of stuck) {
         log(`    Recovering #${job.jobId}: "${job.task.slice(0, 60)}…"`);
-        handleJob(job, client, anthropic, conn, workerAtaInfo.address).catch(
+        recoverJob(job, client, anthropic, conn, workerAtaInfo.address).catch(
           (e: Error) => err(`Recovery of #${job.jobId} failed: ${e.message}`)
         );
         await sleep(2_000);
@@ -335,6 +336,68 @@ async function handleJob(
 
   } else {
     // Step 4b — Score fails — dispute the job
+    log(`${p}  Score ${score} < ${VERIFICATION_THRESHOLD} — marking job Disputed…`);
+    const { txSig: disputeTx } = await client.disputeJob(jobId, score);
+    log(`${p}  ⚠️  Job disputed — payment held in escrow — ${EXPLORER_TX(disputeTx)}`);
+    log(`${p}     Reason: "${reason}"`);
+  }
+}
+
+// ── Recovery handler (already accepted — skip acceptJob) ─────────────────────
+async function recoverJob(
+  job: Job,
+  client: BrewingClient,
+  anthropic: Anthropic,
+  conn: Connection,
+  workerAtaAddress: PublicKey
+): Promise<void> {
+  const { jobId, task, paymentAmount } = job;
+  const p = `[#${jobId}]`;
+
+  log(`${"─".repeat(63)}`);
+  log(`${p}  RECOVERING InProgress job  ${paymentAmount.toFixed(2)} USDC`);
+  log(`${p}  Task: "${task.slice(0, 80)}${task.length > 80 ? "…" : ""}"`);
+
+  // Skip accept — already InProgress — go straight to Claude
+  log(`${p}  Calling Claude claude-opus-4-7 (adaptive thinking)…`);
+  let workOutput = "";
+  const stream = anthropic.messages.stream({
+    model: "claude-opus-4-7",
+    max_tokens: 4096,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    thinking: { type: "adaptive" } as any,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content: task }],
+  });
+  stream.on("text", (chunk) => { workOutput += chunk; });
+  await stream.finalMessage();
+  log(`${p}  ✅ AI response: ${workOutput.length} chars`);
+
+  log(`${p}  Verifying work quality…`);
+  const { score, reason } = await verifyWork(anthropic, task, workOutput);
+  const scoreBar = "█".repeat(score) + "░".repeat(10 - score);
+  log(`${p}  📊 Verification score: ${score}/10  [${scoreBar}]  "${reason}"`);
+
+  if (score >= VERIFICATION_THRESHOLD) {
+    log(`${p}  Score ${score} ≥ ${VERIFICATION_THRESHOLD} — submitting work…`);
+    const { completeTxSig, autoReleased, releaseTxSig } =
+      await client.submitWork(jobId, workOutput, score);
+    log(`${p}  ✅ Work submitted — ${EXPLORER_TX(completeTxSig)}`);
+
+    if (autoReleased && releaseTxSig) {
+      log(`${p}  ✅ Payment auto-released — ${EXPLORER_TX(releaseTxSig)}`);
+      await logPaymentReceived(jobId, conn, workerAtaAddress, paymentAmount);
+      return;
+    }
+
+    log(`${p}  Status: PendingRelease — waiting for poster to approve…`);
+    const paid = await waitForPayment(jobId, client, conn, workerAtaAddress, PAYMENT_WAIT_MS, PAYMENT_POLL_MS);
+    if (paid) {
+      await logPaymentReceived(jobId, conn, workerAtaAddress, paymentAmount);
+    } else {
+      log(`${p}  ⚠️  Timed out waiting for payment after ${PAYMENT_WAIT_MS / 60_000} min.`);
+    }
+  } else {
     log(`${p}  Score ${score} < ${VERIFICATION_THRESHOLD} — marking job Disputed…`);
     const { txSig: disputeTx } = await client.disputeJob(jobId, score);
     log(`${p}  ⚠️  Job disputed — payment held in escrow — ${EXPLORER_TX(disputeTx)}`);
