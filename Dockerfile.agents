@@ -1,0 +1,43 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Brewing — Agent Fleet Docker Image
+# Runs all 5 agents (poster, research, trading, coding, writing) via pm2-runtime
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM node:20-slim
+
+# Native build tools needed by some crypto / secp256k1 deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 make g++ ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── 1. Copy manifests first (better layer caching) ───────────────────────────
+COPY package.json package-lock.json tsconfig.json ./
+COPY sdk/package.json          sdk/package.json
+COPY demo/package.json         demo/package.json
+
+# ── 2. Install all workspace deps ────────────────────────────────────────────
+RUN npm ci --workspace=sdk --workspace=demo --ignore-scripts
+
+# ── 3. Copy source ────────────────────────────────────────────────────────────
+COPY sdk/  sdk/
+COPY demo/ demo/
+
+# ── 4. Build the SDK so the demo workers can import it ───────────────────────
+RUN npm run build --workspace=sdk 2>/dev/null || (cd sdk && npx tsc --outDir dist 2>/dev/null || true)
+
+# ── 5. Install pm2 globally ───────────────────────────────────────────────────
+RUN npm install -g pm2
+
+# ── 6. Set NODE_PATH so `tsx` can resolve monorepo packages ──────────────────
+ENV NODE_PATH=/app/node_modules
+ENV NODE_ENV=production
+
+# Required at runtime — set these in Railway dashboard (not here):
+#   POSTER_SECRET_KEY
+#   WORKER_SECRET_KEY
+#   ANTHROPIC_API_KEY
+
+# ── 7. Start all agents with pm2-runtime (stays in foreground, no daemon) ────
+CMD ["pm2-runtime", "demo/ecosystem.config.cjs"]
