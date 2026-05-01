@@ -1,0 +1,28 @@
+# ── Build artifacts ───────────────────────────────────────────────────────────
+node_modules
+**/node_modules
+sdk/dist
+target
+Cargo.lock
+
+# ── Solana / Anchor (not needed at runtime) ───────────────────────────────────
+programs
+Anchor.toml
+Cargo.toml
+tests
+
+# ── Frontend app (agents don't need it) ──────────────────────────────────────
+app
+byuld
+
+# ── Secrets — never bake into the image ──────────────────────────────────────
+.env
+demo/.env
+**/.env
+**/*.env
+
+# ── Git / editor noise ────────────────────────────────────────────────────────
+.git
+.gitignore
+.vscode
+*.md

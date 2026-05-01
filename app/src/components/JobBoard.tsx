@@ -417,7 +417,6 @@ export default function JobBoard() {
           <ActivityPanel events={feedEvents} compact={demoStep > 0} />
         </div>
       </div>
-      <DevSection />
     </div>
   );
 }
@@ -1069,82 +1068,6 @@ function PostJobForm({ onClose, onSuccess, onError }: {
   );
 }
 
-// ── Developer SDK section ──────────────────────────────────────────────────────
-
-const SNIPPET = `import { BrewingClient } from 'brewing-sdk';
-import { Connection } from '@solana/web3.js';
-
-const client = new BrewingClient({
-  connection: new Connection('https://api.devnet.solana.com'),
-  wallet: myKeypair,
-});
-
-// Post a job — USDC locked in escrow on-chain
-const { jobId } = await client.postJob(
-  'Analyse Solana DeFi yield opportunities',
-  0.10,                       // USDC payment
-  { capability: 'research' }
-);
-
-// Worker: accept the job and deliver output
-await client.acceptJob(jobId);
-await client.submitWork(jobId, workOutput);
-// → USDC released automatically when poster confirms`;
-
-function DevSection() {
-  const [copied, setCopied] = React.useState(false);
-  const installCmd = 'npm install brewing-sdk';
-
-  function copy() {
-    navigator.clipboard.writeText(installCmd).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }
-
-  return (
-    <div style={s.devSection}>
-      {/* amber top-rule signals a new content zone */}
-      <div style={s.devInner}>
-
-        {/* ── Left: headline + description + links ── */}
-        <div style={s.devLeft}>
-          <div style={s.devLabel}>DEVELOPERS</div>
-          <h2 style={s.devHeadline}>Build with Brewing</h2>
-          <p style={s.devDesc}>
-            Integrate the Brewing marketplace into any TypeScript or JavaScript agent.
-            Post jobs, accept them, deliver work, and receive USDC — all on-chain with
-            a three-line API.
-          </p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' as const }}>
-            <a href="https://github.com/Lideeyah/brewing-solana-frontier" target="_blank" rel="noreferrer" style={s.devLink}>
-              ★ GitHub ↗
-            </a>
-            <a href="https://www.npmjs.com/package/brewing-sdk" target="_blank" rel="noreferrer" style={{ ...s.devLink, background: 'transparent', border: '1px solid var(--border-mid)', color: 'var(--text-muted)' }}>
-              npm ↗
-            </a>
-          </div>
-        </div>
-
-        {/* ── Right: install command + code snippet ── */}
-        <div style={s.devRight}>
-          <div style={s.devLabel}>INSTALL</div>
-          <div style={s.devInstallRow}>
-            <code style={s.devInstallCmd}>{installCmd}</code>
-            <button onClick={copy} style={{ ...s.devCopyBtn, ...(copied ? { color: A, borderColor: A30 } : {}) }}>
-              {copied ? '✓ Copied' : 'Copy'}
-            </button>
-          </div>
-
-          <div style={{ ...s.devLabel, marginTop: 20 }}>QUICK START</div>
-          <pre style={s.devCodeBlock}>{SNIPPET}</pre>
-        </div>
-
-      </div>
-    </div>
-  );
-}
-
 // ── Styles ─────────────────────────────────────────────────────────────────────
 
 const s = {
@@ -1299,60 +1222,4 @@ const s = {
     fontFamily: 'var(--font-mono)', fontSize: 12, outline: 'none', boxSizing: 'border-box' as const,
   },
 
-  // ── Developer section ────────────────────────────────────────────────────────
-  devSection: {
-    borderTop: `2px solid ${A}`,
-    background: 'var(--bg-surface)',
-    padding: '36px 0 48px',
-    flexShrink: 0,
-  },
-  devInner: {
-    maxWidth: 1100, margin: '0 auto', padding: '0 40px',
-    display: 'grid', gridTemplateColumns: '260px 1fr', gap: 52,
-    alignItems: 'start',
-  },
-  devLeft: { display: 'flex', flexDirection: 'column' as const },
-  devLabel: {
-    fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.18em',
-    color: 'var(--text-muted)', textTransform: 'uppercase' as const, marginBottom: 10,
-  },
-  devHeadline: {
-    fontSize: 22, fontWeight: 600, color: 'var(--text-primary)',
-    margin: '0 0 12px', letterSpacing: '-0.01em', lineHeight: 1.2,
-  },
-  devDesc: {
-    fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7,
-    margin: '0 0 20px',
-  },
-  devLink: {
-    display: 'inline-flex', alignItems: 'center', gap: 5,
-    fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 500,
-    color: A, textDecoration: 'none', letterSpacing: '0.04em',
-    padding: '4px 10px', border: `1px solid ${A30}`,
-    borderRadius: 5, background: A12,
-  },
-  devRight: { minWidth: 0 },
-  devInstallRow: {
-    display: 'flex', alignItems: 'center', gap: 8,
-    background: '#0a0a0a', border: '1px solid var(--border-mid)',
-    borderRadius: 6, padding: '9px 12px',
-  },
-  devInstallCmd: {
-    flex: 1, fontFamily: 'var(--font-mono)', fontSize: 13,
-    color: 'var(--text-primary)', letterSpacing: '0.02em',
-  },
-  devCopyBtn: {
-    flexShrink: 0, background: 'transparent',
-    border: '1px solid var(--border-mid)', borderRadius: 4,
-    color: 'var(--text-muted)', fontFamily: 'var(--font-mono)',
-    fontSize: 11, padding: '3px 9px', cursor: 'pointer', letterSpacing: '0.04em',
-    transition: 'color 0.15s, border-color 0.15s',
-  },
-  devCodeBlock: {
-    marginTop: 12, background: '#0a0a0a',
-    border: '1px solid var(--border)', borderRadius: 6,
-    padding: '16px 18px', fontFamily: 'var(--font-mono)', fontSize: 12,
-    color: 'var(--text-secondary)', lineHeight: 1.8,
-    overflowX: 'auto' as const, whiteSpace: 'pre' as const, margin: 0,
-  },
 } as const;
