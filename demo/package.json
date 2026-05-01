@@ -12,6 +12,7 @@
     "worker:coding":   "WORKER_CAPABILITY=coding tsx worker-agent.ts",
     "worker:trading":  "WORKER_CAPABILITY=trading tsx worker-agent.ts",
     "worker:writing":  "WORKER_CAPABILITY=writing tsx worker-agent.ts",
+    "orchestrate":     "tsx orchestrator-agent.ts",
     "recover":         "tsx recover-job.ts",
     "pm2:start":       "pm2 start ecosystem.config.cjs",
     "pm2:stop":        "pm2 stop ecosystem.config.cjs",

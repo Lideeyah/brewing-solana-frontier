@@ -20,6 +20,7 @@
     "worker:writing":  "npm run worker:writing  --workspace=brewing-demo",
     "poster":          "npm run poster          --workspace=brewing-demo",
     "post-job":        "npm run post-job        --workspace=brewing-demo",
+    "orchestrate":     "npm run orchestrate     --workspace=brewing-demo",
     "demo":            "npm run demo            --workspace=brewing-demo"
   },
   "dependencies": {
