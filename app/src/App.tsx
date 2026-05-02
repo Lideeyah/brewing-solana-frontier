@@ -6,15 +6,13 @@ import {
 } from '@solana/wallet-adapter-react';
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { PhantomWalletAdapter } from '@solana/wallet-adapter-wallets';
-import { clusterApiUrl } from '@solana/web3.js';
 import JobBoard from './components/JobBoard';
 import LandingPage from './components/LandingPage';
 import AdminDashboard from './components/AdminDashboard';
 
 import '@solana/wallet-adapter-react-ui/styles.css';
 
-const NETWORK = (import.meta.env.VITE_RPC_URL as string | undefined)
-  ?? clusterApiUrl('devnet');
+const NETWORK = 'https://devnet.helius-rpc.com/?api-key=a061166a-9840-4130-9319-39a8efd7b0cf';
 
 // ── Error boundary — catches any React render/effect crash ───────────────────
 interface EBState { hasError: boolean; message: string }
