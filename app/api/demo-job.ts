@@ -85,7 +85,7 @@ const DEMO_TASKS = [
   },
 ];
 
-const RPC_URL = "https://api.devnet.solana.com";
+const RPC_URL = process.env.RPC_URL ?? "https://api.devnet.solana.com";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {

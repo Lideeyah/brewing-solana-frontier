@@ -22,7 +22,7 @@ import { Connection, Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { BrewingClient } from "../sdk/src/index";
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const RPC_URL        = "https://api.devnet.solana.com";
+const RPC_URL        = process.env.RPC_URL ?? "https://api.devnet.solana.com";
 const POLL_MS        = 15_000;
 const MAX_WAIT_MS    = 10 * 60 * 1_000; // 10 min timeout per sub-task
 const EXPLORER_TX    = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=devnet`;

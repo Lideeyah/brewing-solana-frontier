@@ -47,7 +47,7 @@ const POLL_STAGGER: Record<string, number> = { research: 0, trading: 5_000, codi
 const POLL_INTERVAL_MS  = 20_000;
 const PAYMENT_WAIT_MS   = 10 * 60_000;
 const PAYMENT_POLL_MS   = 8_000;
-const RPC_URL           = "https://api.devnet.solana.com";
+const RPC_URL           = process.env.RPC_URL ?? "https://api.devnet.solana.com";
 const USDC_MINT         = new PublicKey(DEVNET_USDC_MINT);
 const EXPLORER_TX       = (sig: string) =>
   `https://explorer.solana.com/tx/${sig}?cluster=devnet`;

@@ -13,7 +13,8 @@ import AdminDashboard from './components/AdminDashboard';
 
 import '@solana/wallet-adapter-react-ui/styles.css';
 
-const NETWORK = clusterApiUrl('devnet');
+const NETWORK = (import.meta.env.VITE_RPC_URL as string | undefined)
+  ?? clusterApiUrl('devnet');
 
 // ── Error boundary — catches any React render/effect crash ───────────────────
 interface EBState { hasError: boolean; message: string }

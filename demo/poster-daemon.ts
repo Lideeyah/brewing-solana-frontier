@@ -4,9 +4,11 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * The other half of a fully autonomous agent economy.
  *
- * Continuously watches for jobs posted by this wallet that have moved to
- * PendingRelease (work delivered by a worker agent), then automatically
- * releases the USDC escrow to the worker — no human approval needed.
+ * Two responsibilities:
+ *   1. Keeps the job board populated — if open jobs drop below MIN_OPEN_JOBS
+ *      it immediately posts a new job from the rotating JOB_POOL.
+ *   2. Auto-releases payment — any job posted by this wallet that reaches
+ *      PendingRelease is automatically approved and USDC sent to the worker.
  *
  * ── Setup ────────────────────────────────────────────────────────────────────
  *   cp .env.example .env
@@ -28,8 +30,98 @@ import { getOrCreateAssociatedTokenAccount } from "@solana/spl-token";
 import { BrewingClient, TREASURY_PUBKEY, DEVNET_USDC_MINT } from "../sdk/src/index";
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const POLL_INTERVAL_MS = 20_000;
-const RPC_URL          = "https://api.devnet.solana.com";
+const POLL_INTERVAL_MS  = 20_000;
+const MIN_OPEN_JOBS     = 2;   // keep at least this many open jobs on the board
+const RPC_URL           = process.env.RPC_URL ?? "https://api.devnet.solana.com";
+
+// ── Job pool — rotated to keep the board populated ────────────────────────────
+type JobSpec = { capability: string; task: string; payment: number };
+const JOB_POOL: JobSpec[] = [
+  // ── Research ────────────────────────────────────────────────────────────────
+  {
+    capability: "research",
+    payment: 0.10,
+    task: "Analyse the top 3 Solana liquid staking protocols (Marinade, Jito, Sanctum). Compare APY, TVL, validator set size, and slashing risk. Produce a ranked recommendation with rationale.",
+  },
+  {
+    capability: "research",
+    payment: 0.10,
+    task: "Research the current state of Solana DeFi: identify the 5 largest protocols by TVL, their dominant token pairs, and 30-day volume trends. Summarise key risks and growth catalysts.",
+  },
+  {
+    capability: "research",
+    payment: 0.10,
+    task: "Investigate recent Solana validator performance: average block time, skip rate, and geographic distribution. Identify the top 3 validators by uptime and stake weight.",
+  },
+  {
+    capability: "research",
+    payment: 0.10,
+    task: "Compare yield opportunities across Solana lending protocols (Marginfi, Kamino, Drift). Include current supply APY for USDC, SOL, and JitoSOL with risk-adjusted rankings.",
+  },
+  // ── Trading ──────────────────────────────────────────────────────────────────
+  {
+    capability: "trading",
+    payment: 0.15,
+    task: "Design a SOL/USDC momentum strategy for Drift Protocol. Specify: (1) entry signals using a 20/50 EMA crossover on 4H candles, (2) position sizing at 2% portfolio risk per trade with ATR-based stops, (3) a funding-rate filter to avoid paying negative funding.",
+  },
+  {
+    capability: "trading",
+    payment: 0.15,
+    task: "Develop a mean-reversion strategy for the JitoSOL/SOL pool on Orca. Define entry/exit z-score thresholds, maximum holding period, fee drag calculation, and expected Sharpe ratio.",
+  },
+  {
+    capability: "trading",
+    payment: 0.15,
+    task: "Evaluate a SOL perpetual long strategy on Drift with 2× leverage. Calculate expected value under three scenarios: bull (+40%), base (+10%), bear (-25%). Include liquidation price and max drawdown.",
+  },
+  {
+    capability: "trading",
+    payment: 0.15,
+    task: "Design a delta-neutral SOL yield strategy: long SOL spot on Marginfi, short SOL-PERP on Drift. Specify rebalancing triggers, borrowing cost analysis, and break-even funding rate.",
+  },
+  // ── Coding ───────────────────────────────────────────────────────────────────
+  {
+    capability: "coding",
+    payment: 0.20,
+    task: "Write a TypeScript function using @solana/web3.js that fetches the 10 most recent transactions for a given public key, decodes SPL token transfer instructions, and returns a structured array of {mint, amount, direction, timestamp} objects. Include error handling and a usage example.",
+  },
+  {
+    capability: "coding",
+    payment: 0.20,
+    task: "Implement a TypeScript class using @coral-xyz/anchor that monitors a Drift Protocol perp market for large trades (>$10,000 notional) and emits events via an EventEmitter. Include WebSocket subscription setup, reconnection logic, and a usage example.",
+  },
+  {
+    capability: "coding",
+    payment: 0.20,
+    task: "Build a TypeScript utility that calculates the optimal swap route between any two SPL tokens using Jupiter's quote API. Accept input/output mint addresses and amount, return the best route with price impact and expected output. Include rate limiting and error handling.",
+  },
+  {
+    capability: "coding",
+    payment: 0.20,
+    task: "Write a TypeScript script that checks the health of a Marginfi borrow position: fetches account data, calculates current LTV, equity, and distance-to-liquidation, and sends a console warning when LTV exceeds 70%. Include a simulation mode that uses mock data.",
+  },
+  // ── Writing ──────────────────────────────────────────────────────────────────
+  {
+    capability: "writing",
+    payment: 0.10,
+    task: "Write a 200-word Twitter/X thread (5 tweets) announcing a new Solana DeFi protocol launch. Lead with a hook about yield opportunities, explain the core mechanism, address safety, and close with a CTA. Use clear language, no jargon.",
+  },
+  {
+    capability: "writing",
+    payment: 0.10,
+    task: "Draft a 300-word technical blog post introduction explaining how Solana's proof-of-history consensus works to a developer audience. Cover: what PoH solves, how it interacts with PoS, and why it enables high throughput. No fluff.",
+  },
+  {
+    capability: "writing",
+    payment: 0.10,
+    task: "Write product documentation for a Solana wallet SDK: cover installation (npm), initialising a connection, signing a transaction, and handling errors. Include concise code snippets. Target audience: JavaScript developers new to Solana.",
+  },
+  {
+    capability: "writing",
+    payment: 0.10,
+    task: "Compose a 250-word investor update email for a Solana DeFi startup: Q1 metrics (TVL, volume, users), one key product milestone, one risk factor and mitigation, and a Q2 outlook. Professional tone, data-driven.",
+  },
+];
 const EXPLORER_TX      = (sig: string) =>
   `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
 
@@ -64,7 +156,7 @@ async function main() {
   // ── Banner ─────────────────────────────────────────────────────────────────
   console.log();
   console.log("╔═════════════════════════════════════════════════════════════╗");
-  console.log("║        BREWING POSTER DAEMON  —  Auto-Release Mode         ║");
+  console.log("║     BREWING POSTER DAEMON  —  Post Jobs + Auto-Release     ║");
   console.log("╚═════════════════════════════════════════════════════════════╝");
   console.log();
   log(`Poster wallet : ${me}`);
@@ -99,18 +191,22 @@ async function main() {
   }
 
   console.log();
+  log(`Min open jobs : ${MIN_OPEN_JOBS} (posts from a pool of ${JOB_POOL.length} tasks)`);
   log("Watching for PendingRelease jobs to auto-approve…");
   log("Press Ctrl+C to stop.\n");
 
   // Track released jobs so we never double-release
-  const released = new Set<number>();
-  let pollCount = 0;
+  const released  = new Set<number>();
+  const posted    = new Set<number>(); // job IDs we posted this session
+  let pollCount   = 0;
+  let poolIndex   = Math.floor(Math.random() * JOB_POOL.length); // start at random position
 
   // ── Poll loop ──────────────────────────────────────────────────────────────
   while (true) {
     try {
       const allJobs = await client.getAllJobs();
 
+      // ── 1. Release any PendingRelease jobs this poster owns ───────────────
       const pending = allJobs.filter(
         (j) =>
           j.status === "PendingRelease" &&
@@ -122,26 +218,40 @@ async function main() {
         log("No pending releases.");
       } else {
         log(`${pending.length} job(s) awaiting approval.`);
-
         for (const job of pending) {
-          // Lock the slot before await to prevent duplicate releases on overlap
           released.add(job.jobId);
-
           log(`${"─".repeat(63)}`);
           log(`Releasing #${job.jobId}  ${job.paymentAmount.toFixed(2)} USDC`);
           log(`  Worker : ${job.workerAgent}`);
           log(`  Task   : "${job.task.slice(0, 70)}${job.task.length > 70 ? "…" : ""}"`);
-
           try {
             const { txSig } = await client.releasePayment(job.jobId);
             log(`✅  #${job.jobId} paid — ${EXPLORER_TX(txSig)}`);
           } catch (e) {
             err(`Release failed for #${job.jobId}: ${(e as Error).message}`);
-            // Allow retry next poll
             released.delete(job.jobId);
           }
         }
       }
+
+      // ── 2. Top up open jobs if board is running low ───────────────────────
+      const openCount = allJobs.filter(j => j.status === "Open").length;
+      if (openCount < MIN_OPEN_JOBS) {
+        const spec = JOB_POOL[poolIndex % JOB_POOL.length];
+        poolIndex++;
+        log(`📋  Only ${openCount} open job(s) — posting a new [${spec.capability}] job…`);
+        try {
+          const jobId = Math.floor(Date.now() / 1000) % 99_000;
+          const { jobId: confirmedId, txSig } = await client.postJob(
+            spec.task, spec.payment, { capability: spec.capability, jobId }
+          );
+          posted.add(confirmedId);
+          log(`✅  Posted #${confirmedId} [${spec.capability}] ${spec.payment.toFixed(2)} USDC — ${EXPLORER_TX(txSig)}`);
+        } catch (e) {
+          err(`Post failed: ${(e as Error).message}`);
+        }
+      }
+
     } catch (e) {
       err(`Poll error: ${(e as Error).message}`);
     }

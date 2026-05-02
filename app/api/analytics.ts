@@ -26,7 +26,7 @@
  */
 
 const PROGRAM_ID = 'BsFiGxfJ9Spn5kp6bJoCxAwswKRskpTiPodNt8EA6QdM';
-const RPC_URL    = 'https://api.devnet.solana.com';
+const RPC_URL    = process.env.RPC_URL ?? 'https://api.devnet.solana.com';
 const EXPLORER   = `https://explorer.solana.com/address/${PROGRAM_ID}?cluster=devnet`;
 
 // ── JobAccount discriminator from the IDL ──────────────────────────────────
