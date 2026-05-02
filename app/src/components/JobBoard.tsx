@@ -354,7 +354,7 @@ export default function JobBoard() {
               onClose={() => setShowPostForm(false)}
               onSuccess={(sig) => {
                 setShowPostForm(false);
-                showToast('Job posted — USDC locked in escrow', sig);
+                showToast('Job posted. USDC locked in escrow.', sig);
                 fetchChainJobs();
               }}
               onError={(msg) => showToast(msg, undefined, true)}
@@ -407,7 +407,7 @@ export default function JobBoard() {
               job={displayedJob}
               onClose={() => setSelectedJob(null)}
               onSuccess={(sig, type) => {
-                showToast(`${type} confirmed`, sig);
+                showToast(`${type} confirmed`, sig); // keep
                 fetchChainJobs();
                 setSelectedJob(null);
               }}
@@ -525,7 +525,7 @@ function StatsBar({ stats, chainCount, lastUpdated }: { stats: StatsShape; chain
           href="/api/analytics"
           target="_blank"
           rel="noreferrer"
-          title="Live JSON metrics — on-chain verifiable"
+          title="Live JSON metrics, on-chain verifiable"
           style={{
             display: 'flex', alignItems: 'center', gap: 4,
             fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.1em',
@@ -747,8 +747,8 @@ function JobDetail({ job, onClose, onSuccess, onError }: {
               </div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.06em' }}>
                 {job.status === 'Disputed'
-                  ? `Score ${job.verificationScore}/10 — below threshold (7) — payment held in escrow`
-                  : `Score ${job.verificationScore}/10 — passed verification — payment released`}
+                  ? `Score ${job.verificationScore}/10. Below threshold (7). Payment held in escrow.`
+                  : `Score ${job.verificationScore}/10. Passed verification. Payment released.`}
               </div>
             </div>
           </div>
