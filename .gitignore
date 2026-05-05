@@ -27,3 +27,5 @@ test-ledger/
 # IDE
 .idea/
 *.swp
+.vercel
+.env*.local

@@ -197,13 +197,32 @@ async function main() {
            j.capability  === CAPABILITY
     );
     if (stuck.length > 0) {
-      log(`🔄  Found ${stuck.length} stuck InProgress job(s) — resuming…`);
-      for (const job of stuck) {
+      // Sort newest-first (highest jobId), cap at 3 to avoid flooding the Anthropic API.
+      // Firing all recovery jobs concurrently causes rate-limit 429s at startup.
+      const MAX_RECOVER = 3;
+      const toRecover = stuck
+        .sort((a, b) => b.jobId - a.jobId)
+        .slice(0, MAX_RECOVER);
+
+      if (stuck.length > MAX_RECOVER) {
+        log(`🔄  Found ${stuck.length} stuck job(s) — recovering the ${MAX_RECOVER} most recent (older ones skipped to avoid API rate limits)…`);
+      } else {
+        log(`🔄  Found ${stuck.length} stuck InProgress job(s) — resuming sequentially…`);
+      }
+
+      for (let i = 0; i < toRecover.length; i++) {
+        const job = toRecover[i];
         log(`    Recovering #${job.jobId}: "${job.task.slice(0, 60)}…"`);
-        recoverJob(job, client, anthropic, conn, workerAtaInfo.address).catch(
-          (e: Error) => err(`Recovery of #${job.jobId} failed: ${e.message}`)
-        );
-        await sleep(2_000);
+        try {
+          await recoverJob(job, client, anthropic, conn, workerAtaInfo.address);
+        } catch (e: unknown) {
+          err(`Recovery of #${job.jobId} failed: ${(e as Error).message}`);
+        }
+        // Pause between recoveries so Claude API doesn't see a burst of requests
+        if (i < toRecover.length - 1) {
+          log(`    Pausing 8 s before next recovery…`);
+          await sleep(8_000);
+        }
       }
     }
   } catch (e) {
@@ -216,16 +235,22 @@ async function main() {
   const processing = new Set<number>();
   let pollCount = 0;
 
+  const myKey = workerKeypair.publicKey.toBase58();
+
   while (true) {
     try {
-      const openJobs = await client.getOpenJobs(CAPABILITY);
-      const newJobs  = openJobs.filter(
-        (j) => !processing.has(j.jobId) && j.paymentAmount >= MIN_PAYMENT_USDC
+      // Fetch all jobs once — used for both Open and InProgress checks
+      const allJobs  = await client.getAllJobs();
+
+      // ── 1. Pick up new Open jobs ──────────────────────────────────────────
+      const newJobs = allJobs.filter(
+        (j) => j.status === "Open" &&
+               j.capability === CAPABILITY &&
+               !processing.has(j.jobId) &&
+               j.paymentAmount >= MIN_PAYMENT_USDC
       );
 
-      if (newJobs.length === 0) {
-        log(`No new [cap:${CAPABILITY}] jobs found.`);
-      } else {
+      if (newJobs.length > 0) {
         log(`Found ${newJobs.length} new [cap:${CAPABILITY}] job(s).`);
         for (const job of newJobs) {
           processing.add(job.jobId);
@@ -235,7 +260,6 @@ async function main() {
                 e.message.includes("credit balance is too low") ||
                 e.message.includes("invalid_api_key") ||
                 e.message.includes("authentication_error");
-
               if (isBillingError) {
                 err(`─────────────────────────────────────────────────────────`);
                 err(`ANTHROPIC API BILLING ERROR — worker paused.`);
@@ -249,6 +273,30 @@ async function main() {
           );
         }
       }
+
+      // ── 2. Drain InProgress backlog — one job per cycle to stay within rate limits
+      // Picks up jobs this worker already accepted but never submitted work for.
+      const stuck = allJobs.filter(
+        (j) => j.status === "InProgress" &&
+               j.capability === CAPABILITY &&
+               j.workerAgent === myKey &&
+               !processing.has(j.jobId)
+      );
+
+      if (stuck.length > 0) {
+        // Only start one recovery if nothing is actively running for this capability
+        if (processing.size === 0) {
+          const job = stuck.sort((a, b) => b.jobId - a.jobId)[0]; // newest first
+          log(`🔄  Draining backlog: recovering #${job.jobId} (${stuck.length} remaining)…`);
+          processing.add(job.jobId);
+          recoverJob(job, client, anthropic, conn, workerAtaInfo.address)
+            .catch((e: Error) => err(`Recovery of #${job.jobId} failed: ${e.message}`))
+            .finally(() => processing.delete(job.jobId));
+        }
+      } else if (newJobs.length === 0) {
+        log(`No new [cap:${CAPABILITY}] jobs found.`);
+      }
+
     } catch (e) {
       err(`Poll error: ${(e as Error).message}`);
     }

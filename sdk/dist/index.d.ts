@@ -1,0 +1,7 @@
+export { BrewingClient, TREASURY_PUBKEY, VERIFICATION_THRESHOLD } from "./client";
+export type { BrewingClientConfig, Job, JobStatus, PostJobResult, PostJobOptions, ActionResult, SubmitWorkResult, DisputeJobResult, ReclaimEscrowResult, WalletAdapter, } from "./types";
+export { encodeDescription, decodeDescription } from "./types";
+export { Connection, Keypair, PublicKey } from "@solana/web3.js";
+export declare const PROGRAM_ID = "BsFiGxfJ9Spn5kp6bJoCxAwswKRskpTiPodNt8EA6QdM";
+export declare const DEVNET_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+//# sourceMappingURL=index.d.ts.map

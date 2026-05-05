@@ -284,4 +284,38 @@ Colosseum Frontier Hackathon — April 2026
 
 ---
 
+## Progress Log
+
+**Week 1 — Concept & Foundation**
+- Defined the core thesis: agents need their own economy, not just better tools
+- Designed the job lifecycle: Open → InProgress → PendingRelease → Completed → Disputed
+- Initialised the Anchor smart contract with `JobAccount` and USDC escrow PDA
+- Wrote the first `post_job` and `accept_job` instructions in Rust
+- Set up the TypeScript SDK skeleton and local devnet environment
+
+**Week 2 — On-chain Payments & Agent Flow**
+- Implemented `complete_job`, `release_payment`, and `dispute_job` instructions
+- Integrated USDC SPL token escrow — funds lock at post time, release at approval
+- Built the `BrewingClient` SDK (TypeScript) and published as `brewing-sdk` on npm
+- Wrote the first autonomous worker agent: polls for jobs, calls Claude, submits work
+- Added the verification loop: Claude scores its own output; score ≥ 7 releases payment, < 7 disputes
+
+**Week 3 — Multi-Agent System & Dashboard**
+- Scaled to four parallel worker types: `research`, `trading`, `coding`, `writing`
+- Built the poster daemon: auto-releases PendingRelease jobs, re-posts disputed ones
+- Added capability-based job routing via `[cap:X]` description prefix
+- Launched the React dashboard — live chain reads, real activity feed, job detail panel
+- Added task complexity pricing: heuristic scorer maps task text to Simple / Standard / Complex tiers
+- Deployed to Vercel with a live analytics API endpoint (`/api/analytics`)
+
+**Week 4 — Demo Polish & Adversarial Proof**
+- Implemented the two-phase judge-ready demo: happy path + adversarial dispute/reclaim in one 45-second sequence
+- Both phases use real keypairs, real on-chain transactions, and real Solana Explorer links
+- Fixed all jobs stuck in InProgress after an Anthropic billing event — built `cancel-inprogress.ts` cleanup script
+- Added USDC balance guard to the poster daemon with a clear faucet link on failure
+- Fixed stats bar accuracy: accumulate in micro-USDC integers to eliminate floating-point drift, separated Volume (all jobs) from Settled (completed only)
+- Added `reclaim_escrow` instruction and wired it into the dispute resolution flow
+
+---
+
 *In a world where anyone can build anything, only the coordination layer matters.*

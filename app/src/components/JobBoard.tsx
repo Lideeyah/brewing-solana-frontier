@@ -96,6 +96,15 @@ export default function JobBoard() {
   const demoCompletedRef                = useRef(false);
   const [demoChainJobId, setDemoChainJobId] = useState<number | null>(null);
   const [demoTaskInfo, setDemoTaskInfo]     = useState<{ task: string; payment: number; capability?: string } | null>(null);
+  // Enhanced demo state — driven by SSE events from /api/demo-run
+  const [demoTxSigs, setDemoTxSigs] = useState<{
+    p1Post?: string; p1Accept?: string; p1Submit?: string; p1Release?: string;
+    p2Post?: string; p2Accept?: string; p2Dispute?: string; p2Reclaim?: string;
+  }>({});
+  const [demoScore, setDemoScore]           = useState<number | null>(null);
+  const [demoJobIds, setDemoJobIds]         = useState<{ p1?: number; p2?: number }>({});
+  const demoPosterAddrRef                   = React.useRef<string | null>(null);
+  const demoWorkerAddrRef                   = React.useRef<string | null>(null);
 
   // ── Clock tick (for relative timestamps) ──────────────────────────────────
   useEffect(() => {
@@ -220,21 +229,30 @@ export default function JobBoard() {
 
   // ── Compute stats from real chain data ────────────────────────────────────
   const stats = useMemo(() => {
-    const completed = chainJobs.filter(j => j.status === 'Completed');
+    const completed  = chainJobs.filter(j => j.status === 'Completed');
     const inProgress = chainJobs.filter(j => j.status === 'InProgress');
-    const open = chainJobs.filter(j => j.status === 'Open');
+    const open       = chainJobs.filter(j => j.status === 'Open');
     const agents = new Set([
       ...chainJobs.map(j => j.posterAgent),
       ...chainJobs.flatMap(j => j.workerAgent ? [j.workerAgent] : []),
     ]);
-    const totalUsdc = chainJobs.reduce((s, j) => s + j.paymentUsdc, 0);
+    // Accumulate in micro-USDC (integers) to avoid floating-point drift
+    const totalMicro     = chainJobs.reduce((s, j) => s + Math.round(j.paymentUsdc * 1_000_000), 0);
+    const settledMicro   = completed.reduce((s, j)  => s + Math.round(j.paymentUsdc * 1_000_000), 0);
+    const totalUsdc      = totalMicro   / 1_000_000;
+    const usdcSettled    = settledMicro / 1_000_000;
     return {
-      totalJobs: chainJobs.length,
-      openJobs: open.length,
+      totalJobs:  chainJobs.length,
+      openJobs:   open.length,
       activeJobs: inProgress.length,
-      usdcSettled: completed.reduce((s, j) => s + j.paymentUsdc, 0),
+      usdcSettled,
+      // Total USDC that has flowed through the system (all statuses)
+      usdcVolume: totalUsdc,
       activeAgents: agents.size,
-      avgPayment: chainJobs.length > 0 ? Math.round(totalUsdc / chainJobs.length) : 0,
+      // Keep two decimal places so $0.10 shows correctly, not 0
+      avgPayment: chainJobs.length > 0
+        ? +(totalUsdc / chainJobs.length).toFixed(2)
+        : 0,
       successRate: chainJobs.length > 0
         ? +((completed.length / chainJobs.length) * 100).toFixed(1)
         : 0,
@@ -254,33 +272,153 @@ export default function JobBoard() {
     }, 6000);
   }, []);
 
-  // ── Demo flow — tries real on-chain job, falls back to mock ──────────────
+  // ── Demo flow — two-phase SSE stream, falls back to mock ────────────────
   async function runDemo() {
     if (demoBusy) return;
     setDemoBusy(true);
+    setDemoStep(0);
+    setDemoTxSigs({});
+    setDemoScore(null);
+    setDemoJobIds({});
+    demoPosterAddrRef.current = null;
+    demoWorkerAddrRef.current = null;
     setDemoChainJobId(null);
-    setDemoTaskInfo(null);
+    setDemoTaskInfo({ task: 'Analyse the top 3 Solana DeFi protocols by TVL and identify the highest yield opportunity for a $1,000 position', payment: 0.10 });
+    demoCompletedRef.current = false;
     setFilter('All');
     setSelectedJob(null);
     setShowPostForm(false);
-    setDemoStep(1);
 
     try {
-      const res = await fetch('/api/demo-job', { method: 'POST' });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`API ${res.status}: ${txt.slice(0, 80)}`);
+      const res = await fetch('/api/demo-run', { method: 'POST' });
+      if (!res.ok || !res.body) throw new Error(`API error ${res.status}`);
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer    = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+
+        for (const frame of frames) {
+          const dataLine = frame.split('\n').find(l => l.startsWith('data:'));
+          if (!dataLine) continue;
+          try {
+            const ev = JSON.parse(dataLine.slice(5).trim()) as {
+              event: string; phase?: 1 | 2;
+              jobId?: number; txSig?: string; score?: number;
+              payment?: number; poster?: string; worker?: string; message?: string;
+            };
+
+            switch (ev.event) {
+              case 'phase_start':
+                if (ev.phase === 1) setDemoStep(1);
+                break;
+
+              case 'posted':
+                if (ev.phase === 1) {
+                  if (ev.poster) demoPosterAddrRef.current = ev.poster;
+                  if (ev.jobId != null) setDemoJobIds(j => ({ ...j, p1: ev.jobId }));
+                  if (ev.txSig) setDemoTxSigs(s => ({ ...s, p1Post: ev.txSig }));
+                  setDemoStep(2);
+                  pushEvent({ id: `dr-post-${Date.now()}`, type: 'JobPosted',
+                    jobId: ev.jobId ?? 0, actor: ev.poster ?? 'poster',
+                    amount: ev.payment ?? 0.10, createdAt: Date.now(), txSig: ev.txSig ?? 'demo' });
+                } else {
+                  if (ev.jobId != null) setDemoJobIds(j => ({ ...j, p2: ev.jobId }));
+                  if (ev.txSig) setDemoTxSigs(s => ({ ...s, p2Post: ev.txSig }));
+                  setDemoStep(7);
+                  pushEvent({ id: `dr-post2-${Date.now()}`, type: 'JobPosted',
+                    jobId: ev.jobId ?? 0, actor: ev.poster ?? 'poster',
+                    amount: ev.payment ?? 0.10, createdAt: Date.now(), txSig: ev.txSig ?? 'demo' });
+                }
+                break;
+
+              case 'accepted':
+                if (ev.phase === 1) {
+                  if (ev.worker) demoWorkerAddrRef.current = ev.worker;
+                  if (ev.txSig) setDemoTxSigs(s => ({ ...s, p1Accept: ev.txSig }));
+                  setDemoStep(3);
+                  pushEvent({ id: `dr-acc-${Date.now()}`, type: 'JobAccepted',
+                    jobId: ev.jobId ?? 0, actor: ev.worker ?? 'worker',
+                    createdAt: Date.now(), txSig: ev.txSig ?? 'demo' });
+                } else {
+                  if (ev.txSig) setDemoTxSigs(s => ({ ...s, p2Accept: ev.txSig }));
+                  setDemoStep(8);
+                  pushEvent({ id: `dr-acc2-${Date.now()}`, type: 'JobAccepted',
+                    jobId: ev.jobId ?? 0, actor: ev.worker ?? 'worker',
+                    createdAt: Date.now(), txSig: ev.txSig ?? 'demo' });
+                }
+                break;
+
+              case 'submitted':
+                if (ev.txSig) setDemoTxSigs(s => ({ ...s, p1Submit: ev.txSig }));
+                if (ev.score != null) setDemoScore(ev.score);
+                setDemoStep(4);
+                pushEvent({ id: `dr-sub-${Date.now()}`, type: 'JobCompleted',
+                  jobId: ev.jobId ?? 0, actor: 'worker',
+                  createdAt: Date.now(), txSig: ev.txSig ?? 'demo' });
+                break;
+
+              case 'released':
+                if (ev.txSig) setDemoTxSigs(s => ({ ...s, p1Release: ev.txSig }));
+                setDemoStep(6);
+                pushEvent({ id: `dr-rel-${Date.now()}`, type: 'PaymentReleased',
+                  jobId: ev.jobId ?? 0, actor: 'poster',
+                  amount: (ev.payment ?? 0.10) * 0.975,
+                  createdAt: Date.now(), txSig: ev.txSig ?? 'demo' });
+                break;
+
+              case 'disputed':
+                if (ev.txSig) setDemoTxSigs(s => ({ ...s, p2Dispute: ev.txSig }));
+                setDemoStep(9);
+                pushEvent({ id: `dr-dis-${Date.now()}`, type: 'JobDisputed',
+                  jobId: ev.jobId ?? 0, actor: 'worker',
+                  verificationScore: ev.score,
+                  createdAt: Date.now(), txSig: ev.txSig ?? 'demo' });
+                break;
+
+              case 'reclaimed':
+                if (ev.txSig) setDemoTxSigs(s => ({ ...s, p2Reclaim: ev.txSig }));
+                setDemoStep(10);
+                pushEvent({ id: `dr-can-${Date.now()}`, type: 'JobCancelled',
+                  jobId: ev.jobId ?? 0, actor: 'poster',
+                  createdAt: Date.now(), txSig: ev.txSig ?? 'demo' });
+                break;
+
+              case 'demo_complete':
+                setDemoStep(11);
+                setTimeout(() => {
+                  setDemoStep(0);
+                  setDemoBusy(false);
+                  setDemoTxSigs({});
+                  setDemoScore(null);
+                  setDemoJobIds({});
+                  setDemoTaskInfo(null);
+                  demoCompletedRef.current = false;
+                  fetchChainJobs();
+                }, 6_000);
+                break;
+
+              case 'error':
+                console.error('[demo] server error:', ev.message);
+                setDemoStep(0);
+                setDemoBusy(false);
+                break;
+            }
+          } catch { /* skip malformed SSE frame */ }
+        }
       }
-      const data = await res.json() as {
-        jobId: number; task: string; capability?: string; payment: number;
-      };
-      setDemoChainJobId(data.jobId);
-      setDemoTaskInfo({ task: data.task, payment: data.payment, capability: data.capability });
-      // demoStep stays at 1; the useEffect above drives subsequent steps from chain state
     } catch (e) {
-      console.warn('[demo] real demo unavailable, using mock:', e);
+      console.warn('[demo] SSE unavailable, using mock:', e);
       setDemoBusy(false);
       setDemoStep(0);
+      setDemoTaskInfo(null);
       runMockDemo();
     }
   }
@@ -401,7 +539,16 @@ export default function JobBoard() {
           </div>
         </div>
         <div style={s.rightCol}>
-          {demoStep > 0 && <DemoConsole step={demoStep} task={demoTaskInfo?.task} payment={demoTaskInfo?.payment} />}
+          {demoStep > 0 && (
+            <DemoConsole
+              step={demoStep}
+              task={demoTaskInfo?.task}
+              payment={demoTaskInfo?.payment}
+              txSigs={demoTxSigs}
+              score={demoScore}
+              jobIds={demoJobIds}
+            />
+          )}
           {!demoStep && displayedJob && (
             <JobDetail
               job={displayedJob}
@@ -460,9 +607,11 @@ function Header({ onPost, onDemo, demoBusy, demoStep }: { onPost: () => void; on
       <div style={s.headerRight}>
         <button onClick={onPost} style={s.ghostBtn}>+ Post Job</button>
         <button onClick={onDemo} disabled={demoBusy} style={{ ...s.accentBtn, ...(demoBusy ? { opacity: 0.7, cursor: 'default' } : {}) }}>
-          {demoStep === 0 && '▶ Run Demo'}
-          {demoStep > 0 && demoStep < 5 && <><Spinner /> Step {demoStep}/4</>}
-          {demoStep === 5 && '✓ Done'}
+          {demoStep === 0  && '▶ Run Demo'}
+          {demoStep >= 1 && demoStep <= 5  && <><Spinner /> Phase 1…</>}
+          {demoStep === 6  && <><Spinner /> Phase 2 Starting…</>}
+          {demoStep >= 7 && demoStep <= 10 && <><Spinner /> Phase 2…</>}
+          {demoStep === 11 && '✓ Complete'}
         </button>
         <WalletMultiButton />
       </div>
@@ -481,15 +630,25 @@ type StatsShape = {
   openJobs: number;
   activeJobs: number;
   usdcSettled: number;
+  usdcVolume: number;
   activeAgents: number;
   avgPayment: number;
   successRate: number;
 };
 
 function StatsBar({ stats, chainCount, lastUpdated }: { stats: StatsShape; chainCount: number; lastUpdated: Date | null }) {
-  const usdcDisplay = stats.usdcSettled >= 1000
+  // Total USDC volume (all jobs, all statuses) — the headline traction number
+  const volumeDisplay = stats.usdcVolume >= 1000
+    ? `$${(stats.usdcVolume / 1000).toFixed(1)}k`
+    : `$${stats.usdcVolume.toFixed(2)}`;
+
+  // USDC paid out to workers (Completed jobs only)
+  const settledDisplay = stats.usdcSettled >= 1000
     ? `$${(stats.usdcSettled / 1000).toFixed(1)}k`
     : `$${stats.usdcSettled.toFixed(2)}`;
+
+  // Average payment per job — previously broken (Math.round made it 0)
+  const avgDisplay = `$${stats.avgPayment.toFixed(2)}`;
 
   const updatedAgo = lastUpdated
     ? (() => {
@@ -500,19 +659,23 @@ function StatsBar({ stats, chainCount, lastUpdated }: { stats: StatsShape; chain
 
   return (
     <div style={s.statsBar}>
-      {/* ── Four headline traction metrics ── */}
-      <Stat label="Total Jobs"       value={stats.totalJobs.toLocaleString()} />
+      {/* ── Headline traction metrics ── */}
+      <Stat label="Total Jobs"      value={stats.totalJobs.toLocaleString()} />
       <StatDiv />
-      <Stat label="USDC Settled"     value={usdcDisplay} accent />
+      <Stat label="USDC Volume"     value={volumeDisplay} accent />
       <StatDiv />
-      <Stat label="Unique Agents"    value={stats.activeAgents.toString()} />
+      <Stat label="USDC Settled"    value={settledDisplay} accent={stats.usdcSettled > 0} />
       <StatDiv />
-      <Stat label="Completion Rate"  value={`${stats.successRate}%`} accent={stats.successRate >= 50} />
+      <Stat label="Avg Payment"     value={avgDisplay} />
+      <StatDiv />
+      <Stat label="Unique Agents"   value={stats.activeAgents.toString()} />
+      <StatDiv />
+      <Stat label="Completion Rate" value={`${stats.successRate}%`} accent={stats.successRate >= 50} />
       <StatDiv />
       {/* ── Operational pulse ── */}
-      <Stat label="Open Now"         value={stats.openJobs.toString()} />
+      <Stat label="Open Now"        value={stats.openJobs.toString()} />
       <StatDiv />
-      <Stat label="On-chain"         value={chainCount.toString()} accent={chainCount > 0} />
+      <Stat label="On-chain"        value={chainCount.toString()} accent={chainCount > 0} />
 
       {/* ── Right-aligned: last-updated + API link ── */}
       <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12, paddingLeft: 16 }}>
@@ -863,58 +1026,255 @@ function ActionBtn({ label, primary, busy, onClick }: { label: string; primary?:
   );
 }
 
-// ── Demo console ───────────────────────────────────────────────────────────────
+// ── Demo console — two-phase: happy path + adversarial ────────────────────────
 
-function DemoConsole({ step, task, payment }: { step: number; task?: string; payment?: number }) {
-  const pct = step >= 5 ? 100 : Math.round(((step - 1) / 4) * 100);
-  const amt = (payment ?? 0.10).toFixed(2);
-  const demoSteps = [
-    { id: 1, label: 'Post Job',         detail: `Escrow funded · ${amt} USDC locked` },
-    { id: 2, label: 'Accept Job',       detail: 'Worker committed on-chain' },
-    { id: 3, label: 'Work Delivered',   detail: 'Output verified by Claude' },
-    { id: 4, label: 'Payment Released', detail: `${amt} USDC transferred` },
-  ];
-  // Show first 60 chars of task as subtitle
-  const subtitle = task
-    ? (task.length > 52 ? task.slice(0, 52) + '…' : task)
-    : `Sentiment Analysis · ${amt} USDC`;
+type DemoTxSigs = {
+  p1Post?: string; p1Accept?: string; p1Submit?: string; p1Release?: string;
+  p2Post?: string; p2Accept?: string; p2Dispute?: string; p2Reclaim?: string;
+};
+
+function DemoConsole({ step, task, payment, txSigs, score, jobIds }: {
+  step: number;
+  task?: string;
+  payment?: number;
+  txSigs: DemoTxSigs;
+  score: number | null;
+  jobIds: { p1?: number; p2?: number };
+}) {
+  const amt    = (payment ?? 0.10).toFixed(2);
+  const paidAmt = ((payment ?? 0.10) * 0.975).toFixed(4);
+
+  // Phase 1 progress: step 1→5 maps to 0→100%
+  const p1Pct = step >= 6  ? 100 : step >= 1 ? Math.round(((step - 1) / 4) * 100) : 0;
+  // Phase 2 progress: step 7→10 maps to 0→100%
+  const p2Pct = step >= 11 ? 100 : step >= 7 ? Math.round(((step - 7) / 3) * 100) : 0;
+
+  const subtitle = task ? (task.length > 54 ? task.slice(0, 54) + '…' : task) : `DeFi Analysis · ${amt} USDC`;
+
+  // Phase 1 step definitions
+  const p1Steps = [
+    { id: 1, label: 'Job Posted',        detail: `${amt} USDC locked in escrow`,                         sig: txSigs.p1Post    },
+    { id: 2, label: 'Agent Accepted',    detail: 'Worker committed on-chain',                            sig: txSigs.p1Accept  },
+    { id: 3, label: 'Claude Working',    detail: 'Analysing Solana DeFi protocols…',                     sig: undefined        },
+    { id: 4, label: 'Work Verified',     detail: score != null ? `Score: ${score}/10 · passed threshold (≥7)` : 'Verified by Claude', sig: txSigs.p1Submit  },
+    { id: 5, label: 'Payment Released',  detail: `${paidAmt} USDC → worker (97.5% after fee)`,          sig: txSigs.p1Release },
+  ] as const;
+
+  // Phase 2 step definitions
+  const p2Steps = [
+    { id: 7,  label: 'Job Posted',        detail: `${amt} USDC locked in escrow`,                        sig: txSigs.p2Post,   red: false },
+    { id: 8,  label: 'Agent Accepted',    detail: 'Worker accepts the job',                              sig: txSigs.p2Accept, red: false },
+    { id: 9,  label: '⚠ Work Disputed',   detail: 'Score: 3/10 · below threshold · payment withheld',   sig: txSigs.p2Dispute, red: true },
+    { id: 10, label: 'Escrow Reclaimed',  detail: `${amt} USDC returned to poster in full`,              sig: txSigs.p2Reclaim, red: false },
+  ] as const;
+
   return (
-    <div style={s.demoConsole}>
+    <div style={{ ...s.demoConsole, maxHeight: 520, overflowY: 'auto' as const }}>
+      {/* Header */}
       <div style={s.panelHeader}>
         <span style={s.panelTitle}>LIVE DEMO</span>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.08em', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{subtitle}</span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)',
+          letterSpacing: '0.06em', maxWidth: 230, overflow: 'hidden', textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap' as const }}>
+          {subtitle}
+        </span>
       </div>
-      <div style={{ padding: '8px 20px' }}>
-        {demoSteps.map(ds => {
-          const state = step > ds.id ? 'done' : step === ds.id ? 'active' : 'pending';
-          return (
-            <div key={ds.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
-              <div style={{
-                width: 20, height: 20, borderRadius: '50%', flexShrink: 0, marginTop: 1,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600,
-                background: state !== 'pending' ? A12 : 'transparent',
-                border: `1px solid ${state === 'pending' ? 'var(--border)' : A30}`,
-                color: state === 'pending' ? 'var(--text-muted)' : A,
+
+      {/* ── Phase 1: Happy Path ── */}
+      <div style={{ padding: '8px 18px 6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+          <span style={{
+            fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.14em', fontWeight: 600,
+            color: step >= 6 ? '#22c55e' : A,
+          }}>
+            PHASE 1 — HAPPY PATH{step >= 6 ? '  ✓' : ''}
+          </span>
+          <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+        </div>
+
+        {p1Steps.map(ps => (
+          <DemoStepRow
+            key={ps.id}
+            state={step > ps.id || step >= 6 ? 'done' : step === ps.id ? 'active' : 'pending'}
+            label={ps.label}
+            detail={ps.detail}
+            sig={ps.sig}
+            red={false}
+          />
+        ))}
+
+        {/* Phase 1 progress bar */}
+        <div style={{ marginTop: 6, marginBottom: 2 }}>
+          <div style={{ height: 2, background: 'var(--border)', borderRadius: 1, overflow: 'hidden', marginBottom: 4 }}>
+            <div style={{ height: '100%', width: `${p1Pct}%`, background: step >= 6 ? '#22c55e' : A,
+              borderRadius: 1, transition: 'width 0.6s ease' }} />
+          </div>
+        </div>
+
+        {/* Phase 1 complete — Explorer link */}
+        {step >= 6 && txSigs.p1Release && (
+          <a href={EXPLORER(txSigs.p1Release)} target="_blank" rel="noreferrer"
+            style={{ display: 'block', textAlign: 'right' as const, fontFamily: 'var(--font-mono)',
+              fontSize: 10, color: '#22c55e', textDecoration: 'none', letterSpacing: '0.06em',
+              marginBottom: 4 }}>
+            View release tx on Explorer ↗
+          </a>
+        )}
+      </div>
+
+      {/* ── Phase 2: Adversarial Case (shown from step 6 onward) ── */}
+      {step >= 6 && (
+        <div style={{ padding: '8px 18px 6px', borderTop: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.14em', fontWeight: 600,
+              color: step >= 11 ? '#22c55e' : '#ef4444',
+            }}>
+              PHASE 2 — ADVERSARIAL CASE{step >= 11 ? '  ✓' : ''}
+            </span>
+            <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+          </div>
+
+          {p2Steps.map(ps => (
+            <DemoStepRow
+              key={ps.id}
+              state={step > ps.id ? 'done' : step === ps.id ? 'active' : 'pending'}
+              label={ps.label}
+              detail={ps.detail}
+              sig={ps.sig}
+              red={ps.red}
+            />
+          ))}
+
+          {/* Locked escrow banner — visible only while disputed, before reclaim */}
+          {step === 9 && (
+            <div style={{
+              margin: '6px 0 4px', padding: '6px 12px',
+              background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.28)',
+              borderRadius: 5, display: 'flex', alignItems: 'center', gap: 8,
+            }}>
+              <span style={{ fontSize: 13 }}>🔒</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#ef4444',
+                letterSpacing: '0.08em', flex: 1 }}>
+                ESCROW LOCKED · {amt} USDC WITHHELD
+              </span>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: 9, color: 'rgba(239,68,68,0.6)',
+                padding: '2px 7px', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 3,
+                display: 'flex', alignItems: 'center', gap: 4, letterSpacing: '0.06em',
               }}>
-                {state === 'done' ? '✓' : state === 'active' ? <Spinner /> : ds.id}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, fontWeight: 500, color: state === 'pending' ? 'var(--text-muted)' : 'var(--text-primary)', letterSpacing: '0.02em' }}>{ds.label}</div>
-                {state !== 'pending' && <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>{ds.detail}</div>}
-              </div>
+                <Spinner size={7} /> RECLAIMING
+              </span>
             </div>
-          );
-        })}
+          )}
+
+          {/* Phase 2 progress bar */}
+          <div style={{ marginTop: 6, marginBottom: 2 }}>
+            <div style={{ height: 2, background: 'var(--border)', borderRadius: 1, overflow: 'hidden', marginBottom: 4 }}>
+              <div style={{ height: '100%', width: `${p2Pct}%`,
+                background: step >= 11 ? '#22c55e' : '#ef4444',
+                borderRadius: 1, transition: 'width 0.6s ease' }} />
+            </div>
+          </div>
+
+          {/* Phase 2 complete — Explorer link */}
+          {step >= 10 && txSigs.p2Reclaim && (
+            <a href={EXPLORER(txSigs.p2Reclaim)} target="_blank" rel="noreferrer"
+              style={{ display: 'block', textAlign: 'right' as const, fontFamily: 'var(--font-mono)',
+                fontSize: 10, color: A, textDecoration: 'none', letterSpacing: '0.06em',
+                marginBottom: 4 }}>
+              View reclaim tx on Explorer ↗
+            </a>
+          )}
+        </div>
+      )}
+
+      {/* ── Final banner ── */}
+      {step === 11 && (
+        <div style={{
+          margin: '0 18px 12px', padding: '8px 14px',
+          background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.25)',
+          borderRadius: 6, textAlign: 'center' as const,
+        }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#22c55e',
+            letterSpacing: '0.14em', fontWeight: 600 }}>
+            ✓ PROTOCOL VERIFIED ON-CHAIN
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)',
+            letterSpacing: '0.06em', marginTop: 3 }}>
+            happy path + adversarial case — both proven
+          </div>
+          {(jobIds.p1 || jobIds.p2) && (
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--border-mid)',
+              marginTop: 4, letterSpacing: '0.04em' }}>
+              Job #{jobIds.p1} · Job #{jobIds.p2}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Demo step row ──────────────────────────────────────────────────────────────
+
+function DemoStepRow({ state, label, detail, sig, red }: {
+  state: 'done' | 'active' | 'pending';
+  label: string;
+  detail: string;
+  sig?: string;
+  red: boolean;
+}) {
+  // If active AND we have a result sig (non-Claude steps), render as done immediately
+  const effective = state === 'active' && sig !== undefined && !red ? 'done' : state;
+  const accentCol = red ? '#ef4444' : A;
+  const borderCol = red ? 'rgba(239,68,68,0.3)' : A30;
+  const bgCol     = red ? 'rgba(239,68,68,0.1)' : A12;
+
+  const icon =
+    effective === 'done'   ? '✓' :
+    effective === 'active' && red ? '⚠' :
+    effective === 'active' ? <Spinner size={8} /> :
+    null;
+
+  const textColor =
+    effective === 'pending' ? 'var(--text-muted)' :
+    red ? '#ef4444' : 'var(--text-primary)';
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '5px 0' }}>
+      <div style={{
+        width: 18, height: 18, borderRadius: '50%', flexShrink: 0, marginTop: 1,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700,
+        background: effective !== 'pending' ? bgCol : 'transparent',
+        border: `1px solid ${effective === 'pending' ? 'var(--border)' : borderCol}`,
+        color: effective === 'pending' ? 'var(--text-muted)' : accentCol,
+      }}>
+        {icon}
       </div>
-      <div style={{ padding: '10px 20px 14px' }}>
-        <div style={{ height: 2, background: 'var(--border)', borderRadius: 1, overflow: 'hidden', marginBottom: 5 }}>
-          <div style={{ height: '100%', width: `${pct}%`, background: A, borderRadius: 1, transition: 'width 0.5s ease' }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 500, color: textColor, letterSpacing: '0.01em' }}>
+          {label}
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
-          <span>{step >= 5 ? 'Complete' : `Step ${step} of 4`}</span>
-          <span style={{ color: step >= 5 ? A : 'var(--text-muted)' }}>{pct}%</span>
-        </div>
+        {effective !== 'pending' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' as const,
+            marginTop: 1 }}>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+              {detail}
+            </span>
+            {sig && (
+              <a href={EXPLORER(sig)} target="_blank" rel="noreferrer"
+                style={{ fontFamily: 'var(--font-mono)', fontSize: 10,
+                  color: red ? 'rgba(239,68,68,0.6)' : 'var(--text-muted)',
+                  textDecoration: 'none', whiteSpace: 'nowrap' as const,
+                  borderBottom: `1px dotted ${red ? 'rgba(239,68,68,0.3)' : 'var(--border-mid)'}`,
+                }}>
+                {sig.slice(0, 8)}… ↗
+              </a>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -997,6 +1357,71 @@ function ActivityPanel({ events, compact }: { events: ActivityEvent[]; compact?:
 
 // ── Post job form — wired to on-chain ─────────────────────────────────────────
 
+// ── Task complexity pricing ────────────────────────────────────────────────────
+// Scores the task text on a set of signals and maps to a per-capability price tier.
+// No API call — runs locally on every keystroke.
+const PRICE_TIERS: Record<string, [number, number, number]> = {
+  research: [0.05, 0.10, 0.20],
+  trading:  [0.10, 0.15, 0.25],
+  coding:   [0.15, 0.20, 0.30],
+  writing:  [0.05, 0.10, 0.15],
+};
+
+function scoreTask(task: string): number {
+  const t = task.toLowerCase();
+  const words = t.split(/\s+/).filter(Boolean);
+  let score = 0;
+
+  // Word count — lower bands so concise-but-complex tasks aren't penalised
+  if (words.length > 20)  score += 1;
+  if (words.length > 50)  score += 1;
+  if (words.length > 100) score += 1;
+
+  // Numbered sub-requirements — each is a distinct deliverable
+  const numberedSteps = (task.match(/\(\d+\)|\b\d+[.)]\s/g) ?? []).length;
+  score += Math.min(numberedSteps, 4);
+
+  // Deliverable verbs — things the agent must explicitly produce
+  const deliverables = ['write','return','build','calculate','produce','generate',
+    'implement','create','design','output','compare','evaluate','specify','include'];
+  score += Math.min(deliverables.filter(k => t.includes(k)).length, 3);
+
+  // Constraint keywords — each adds reasoning surface area
+  const constraints = ['must','should','ensure','validate','handle','without',
+    'only if','at least','no more than','never','always'];
+  score += Math.min(constraints.filter(k => t.includes(k)).length, 3);
+
+  // Numerical comparison breadth — "top 5 protocols", "3 scenarios"
+  const numerals = (task.match(/\b(top\s*\d+|\d+\s*(protocol|scenario|option|token|case|step|exchange|wallet|validator)s?)\b/gi) ?? []).length;
+  score += Math.min(numerals, 3);
+
+  // High-signal output formats
+  if (t.includes('test') || t.includes('mocha') || t.includes('chai')) score += 2;
+  if (t.includes('table') || t.includes('comparison table'))            score += 1;
+  if (t.includes('end-to-end') || t.includes('step-by-step'))          score += 1;
+
+  return score;
+}
+
+type PriceTier = 'Simple' | 'Standard' | 'Complex';
+
+function estimatePrice(task: string, capability: string): { price: number; tier: PriceTier } {
+  const score = scoreTask(task);
+  const [low, mid, high] = PRICE_TIERS[capability] ?? [0.10, 0.15, 0.20];
+  if (score <= 2)  return { price: low,  tier: 'Simple'   };
+  if (score <= 7)  return { price: mid,  tier: 'Standard' };
+  return                  { price: high, tier: 'Complex'  };
+}
+
+const TIER_COLOR: Record<PriceTier, string> = {
+  Simple:   'var(--text-muted)',
+  Standard: '#F59E0B',
+  Complex:  '#EF4444',
+};
+
+const CAPABILITIES = ['research', 'trading', 'coding', 'writing'] as const;
+type Capability = typeof CAPABILITIES[number];
+
 function PostJobForm({ onClose, onSuccess, onError }: {
   onClose: () => void;
   onSuccess: (sig: string) => void;
@@ -1004,26 +1429,32 @@ function PostJobForm({ onClose, onSuccess, onError }: {
 }) {
   const { publicKey } = useWallet();
   const { postJob } = useJobActions();
-  const [desc, setDesc]       = useState('');
-  const [payment, setPayment] = useState('');
-  const [jobId, setJobId]     = useState(() => String(Math.floor(Date.now() / 1000) % 100000));
-  const [busy, setBusy]       = useState(false);
+  const [capability, setCapability] = useState<Capability>('research');
+  const [task, setTask]   = useState('');
+  const [jobId, setJobId] = useState(() => String(Math.floor(Date.now() / 1000) % 100000));
+  const [busy, setBusy]   = useState(false);
+
+  // Recalculate on every keystroke — returns Simple tier defaults for very short input
+  const { price, tier } = task.trim().length > 20
+    ? estimatePrice(task.trim(), capability)
+    : { price: PRICE_TIERS[capability][0], tier: 'Simple' as PriceTier };
+
+  const tierCol = TIER_COLOR[tier];
 
   async function handleSubmit() {
-    if (!publicKey) { onError('Connect your wallet first'); return; }
-    if (!desc.trim())  { onError('Description is required'); return; }
-    const amt = parseFloat(payment);
-    if (!amt || amt <= 0) { onError('Enter a payment amount > 0'); return; }
+    if (!publicKey)    { onError('Connect your wallet first'); return; }
+    if (!task.trim())  { onError('Description is required'); return; }
     const id = parseInt(jobId);
     if (!id || id <= 0) { onError('Enter a valid Job ID'); return; }
 
     setBusy(true);
     try {
-      const sig = await postJob(id, desc.trim(), amt);
+      // Encode capability tag so workers can filter by type
+      const description = `[cap:${capability}] ${task.trim()}`;
+      const sig = await postJob(id, description, price);
       onSuccess(sig);
     } catch (e: unknown) {
       const raw = e instanceof Error ? e.message : String(e);
-      // Surface the most useful part of anchor errors
       const match = raw.match(/Error Message: (.+?)\./) ?? raw.match(/"message":"(.+?)"/);
       onError(match ? match[1] : raw.slice(0, 120));
     } finally {
@@ -1037,23 +1468,81 @@ function PostJobForm({ onClose, onSuccess, onError }: {
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.15em', color: 'var(--text-primary)', fontWeight: 600 }}>NEW JOB</span>
         <button onClick={onClose} style={s.closeBtn}>✕</button>
       </div>
-      {[
-        { label: 'JOB ID',          type: 'number', val: jobId,    set: setJobId,   ph: 'e.g. 52' },
-        { label: 'PAYMENT (USDC)',  type: 'number', val: payment,  set: setPayment, ph: '100' },
-      ].map(({ label, type, val, set, ph }) => (
-        <div key={label} style={{ marginBottom: 10 }}>
-          <label style={s.formLabel}>{label}</label>
-          <input style={s.formInput} type={type} value={val} onChange={e => set(e.target.value)} placeholder={ph} />
+
+      {/* Job ID */}
+      <div style={{ marginBottom: 10 }}>
+        <label style={s.formLabel}>JOB ID</label>
+        <input style={s.formInput} type="number" value={jobId} onChange={e => setJobId(e.target.value)} placeholder="e.g. 52" />
+      </div>
+
+      {/* Capability selector */}
+      <div style={{ marginBottom: 10 }}>
+        <label style={s.formLabel}>CAPABILITY</label>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {CAPABILITIES.map(cap => (
+            <button
+              key={cap}
+              onClick={() => setCapability(cap)}
+              style={{
+                flex: 1, padding: '5px 0', fontSize: 10,
+                fontFamily: 'var(--font-mono)', letterSpacing: '0.08em',
+                textTransform: 'uppercase', cursor: 'pointer', borderRadius: 4,
+                border: capability === cap
+                  ? '1px solid rgba(245,158,11,0.6)'
+                  : '1px solid var(--border-mid)',
+                background: capability === cap
+                  ? 'rgba(245,158,11,0.08)'
+                  : 'var(--bg-input)',
+                color: capability === cap ? '#F59E0B' : 'var(--text-muted)',
+                transition: 'all 0.15s',
+              }}
+            >
+              {cap}
+            </button>
+          ))}
         </div>
-      ))}
+      </div>
+
+      {/* Task description */}
       <div style={{ marginBottom: 10 }}>
         <label style={s.formLabel}>DESCRIPTION <span style={{ opacity: 0.4 }}>(max 512)</span></label>
         <textarea
-          style={{ ...s.formInput, height: 72, resize: 'vertical' } as React.CSSProperties}
-          value={desc} onChange={e => setDesc(e.target.value)} maxLength={512}
+          style={{ ...s.formInput, height: 88, resize: 'vertical' } as React.CSSProperties}
+          value={task} onChange={e => setTask(e.target.value)} maxLength={512}
           placeholder="Describe the task for the worker agent…"
         />
       </div>
+
+      {/* Calculated price — locked for Complex, informational for others */}
+      <div style={{ marginBottom: 12 }}>
+        <label style={s.formLabel}>
+          PRICE
+          <span style={{ marginLeft: 6, color: tierCol, fontSize: 9, letterSpacing: '0.12em' }}>
+            {tier === 'Complex'  ? '⬥ COMPLEX · LOCKED BY SYSTEM' :
+             tier === 'Standard' ? '⬥ STANDARD'                    :
+                                   '⬥ SIMPLE'}
+          </span>
+        </label>
+        <div style={{
+          ...s.formInput,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          pointerEvents: 'none', userSelect: 'none',
+          border: `1px solid ${
+            tier === 'Complex'  ? 'rgba(239,68,68,0.4)'    :
+            tier === 'Standard' ? 'rgba(245,158,11,0.3)'   :
+                                  'var(--border-mid)'
+          }`,
+          background: tier === 'Complex' ? 'rgba(239,68,68,0.05)' : 'var(--bg-input)',
+        }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 16, fontWeight: 700, color: tierCol }}>
+            {price.toFixed(2)} <span style={{ fontSize: 10, fontWeight: 400 }}>USDC</span>
+          </span>
+          <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>
+            {tier === 'Complex' ? 'SET BY SYSTEM' : 'AUTO-CALCULATED'}
+          </span>
+        </div>
+      </div>
+
       <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginBottom: 12, letterSpacing: '0.02em' }}>
         {publicKey ? 'USDC locked in escrow on-chain immediately.' : '⚠ Connect wallet to post a job.'}
       </div>
@@ -1062,7 +1551,7 @@ function PostJobForm({ onClose, onSuccess, onError }: {
         onClick={handleSubmit}
         style={{ ...s.accentBtn, width: '100%', padding: '9px 0', justifyContent: 'center', opacity: (!publicKey || busy) ? 0.6 : 1 }}
       >
-        {busy ? <><Spinner /> Confirming…</> : 'Post Job + Lock USDC'}
+        {busy ? <><Spinner /> Confirming…</> : `Post Job · ${price.toFixed(2)} USDC`}
       </button>
     </div>
   );

@@ -26,8 +26,54 @@
 import dotenv from "dotenv";
 dotenv.config({ override: true });
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
-import { getOrCreateAssociatedTokenAccount } from "@solana/spl-token";
+import { getOrCreateAssociatedTokenAccount, getAccount } from "@solana/spl-token";
 import { BrewingClient, TREASURY_PUBKEY, DEVNET_USDC_MINT } from "../sdk/src/index";
+
+// ── Task complexity pricing ───────────────────────────────────────────────────
+const PRICE_TIERS: Record<string, [number, number, number]> = {
+  research: [0.05, 0.10, 0.20],
+  trading:  [0.10, 0.15, 0.25],
+  coding:   [0.15, 0.20, 0.30],
+  writing:  [0.05, 0.10, 0.15],
+};
+
+function scoreTask(task: string): number {
+  const t = task.toLowerCase();
+  const words = t.split(/\s+/).filter(Boolean);
+  let score = 0;
+
+  if (words.length > 20)  score += 1;
+  if (words.length > 50)  score += 1;
+  if (words.length > 100) score += 1;
+
+  const numberedSteps = (task.match(/\(\d+\)|\b\d+[.)]\s/g) ?? []).length;
+  score += Math.min(numberedSteps, 4);
+
+  const deliverables = ['write','return','build','calculate','produce','generate',
+    'implement','create','design','output','compare','evaluate','specify','include'];
+  score += Math.min(deliverables.filter(k => t.includes(k)).length, 3);
+
+  const constraints = ['must','should','ensure','validate','handle','without',
+    'only if','at least','no more than','never','always'];
+  score += Math.min(constraints.filter(k => t.includes(k)).length, 3);
+
+  const numerals = (task.match(/\b(top\s*\d+|\d+\s*(protocol|scenario|option|token|case|step|exchange|wallet|validator)s?)\b/gi) ?? []).length;
+  score += Math.min(numerals, 3);
+
+  if (t.includes('test') || t.includes('mocha') || t.includes('chai')) score += 2;
+  if (t.includes('table') || t.includes('comparison table'))            score += 1;
+  if (t.includes('end-to-end') || t.includes('step-by-step'))          score += 1;
+
+  return score;
+}
+
+function estimatePrice(task: string, capability: string): number {
+  const score = scoreTask(task);
+  const [low, mid, high] = PRICE_TIERS[capability] ?? [0.10, 0.15, 0.20];
+  if (score <= 2)  return low;
+  if (score <= 7)  return mid;
+  return high;
+}
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const POLL_INTERVAL_MS  = 20_000;
@@ -181,25 +227,35 @@ async function main() {
   // Ensure the protocol treasury's USDC token account exists on-chain.
   // release_payment sends 2.5% there — if the ATA is missing the tx errors.
   const usdcMint = new PublicKey(DEVNET_USDC_MINT);
+  let posterAta: Awaited<ReturnType<typeof getOrCreateAssociatedTokenAccount>> | null = null;
   try {
     const treasuryAta = await getOrCreateAssociatedTokenAccount(
       conn, posterKeypair, usdcMint, TREASURY_PUBKEY
     );
     log(`Treasury ATA  : ${treasuryAta.address.toBase58()} (ready)`);
+    posterAta = await getOrCreateAssociatedTokenAccount(
+      conn, posterKeypair, usdcMint, posterKeypair.publicKey
+    );
+    const usdcBalance = Number(posterAta.amount) / 1_000_000;
+    log(`USDC balance  : ${usdcBalance.toFixed(4)} USDC`);
+    if (usdcBalance < 0.25) {
+      log("⚠️  USDC balance low — posting will be skipped until refilled.");
+      log("    Get devnet USDC: https://faucet.circle.com");
+      log(`    Select Solana Devnet, paste: ${posterKeypair.publicKey.toBase58()}`);
+    }
   } catch (e) {
     log(`⚠️  Could not init treasury ATA: ${(e as Error).message}`);
   }
 
   console.log();
-  log(`Min open jobs : ${MIN_OPEN_JOBS} (posts from a pool of ${JOB_POOL.length} tasks)`);
+  log("Mode          : release-only (posting disabled)");
   log("Watching for PendingRelease jobs to auto-approve…");
   log("Press Ctrl+C to stop.\n");
 
-  // Track released jobs so we never double-release
+  // Track released/reclaimed jobs so we never double-process
   const released  = new Set<number>();
-  const posted    = new Set<number>(); // job IDs we posted this session
+  const reclaimed = new Set<number>();
   let pollCount   = 0;
-  let poolIndex   = Math.floor(Math.random() * JOB_POOL.length); // start at random position
 
   // ── Poll loop ──────────────────────────────────────────────────────────────
   while (true) {
@@ -234,21 +290,35 @@ async function main() {
         }
       }
 
-      // ── 2. Top up open jobs if board is running low ───────────────────────
-      const openCount = allJobs.filter(j => j.status === "Open").length;
-      if (openCount < MIN_OPEN_JOBS) {
-        const spec = JOB_POOL[poolIndex % JOB_POOL.length];
-        poolIndex++;
-        log(`📋  Only ${openCount} open job(s) — posting a new [${spec.capability}] job…`);
+      // ── 2. Reclaim disputed jobs and immediately re-post for a fresh attempt ─
+      const disputed = allJobs.filter(
+        (j) =>
+          j.status === "Disputed" &&
+          j.posterAgent === me &&
+          !reclaimed.has(j.jobId)
+      );
+
+      for (const job of disputed) {
+        reclaimed.add(job.jobId);
+        log(`${"─".repeat(63)}`);
+        log(`♻️  Reclaiming escrow on disputed #${job.jobId}  ${job.paymentAmount.toFixed(2)} USDC`);
+        log(`  Task : "${job.task.slice(0, 70)}${job.task.length > 70 ? "…" : ""}"`);
         try {
-          const jobId = Math.floor(Date.now() / 1000) % 99_000;
-          const { jobId: confirmedId, txSig } = await client.postJob(
-            spec.task, spec.payment, { capability: spec.capability, jobId }
+          const { txSig: reclaimTx } = await client.reclaimEscrow(job.jobId);
+          log(`✅  #${job.jobId} reclaimed — ${EXPLORER_TX(reclaimTx)}`);
+
+          // Re-post the same task immediately so workers get another attempt.
+          // Recalculate price from task complexity — don't reuse the old disputed price.
+          const repostPrice = estimatePrice(job.task, job.capability ?? 'research');
+          log(`📋  Re-posting #${job.jobId} task as a fresh job (${repostPrice.toFixed(2)} USDC)…`);
+          const newJobId = Math.floor(Date.now() / 1000) % 99_000;
+          const { jobId: repostedId, txSig: repostTx } = await client.postJob(
+            job.task, repostPrice, { capability: job.capability, jobId: newJobId }
           );
-          posted.add(confirmedId);
-          log(`✅  Posted #${confirmedId} [${spec.capability}] ${spec.payment.toFixed(2)} USDC — ${EXPLORER_TX(txSig)}`);
+          log(`✅  Re-posted as #${repostedId} [${job.capability}] ${repostPrice.toFixed(2)} USDC — ${EXPLORER_TX(repostTx)}`);
         } catch (e) {
-          err(`Post failed: ${(e as Error).message}`);
+          err(`Reclaim/repost failed for #${job.jobId}: ${(e as Error).message}`);
+          reclaimed.delete(job.jobId);
         }
       }
 
