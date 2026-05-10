@@ -19,6 +19,7 @@ import {
 } from '../data/mockData';
 import { useBrewingProgram } from '../hooks/useBrewingProgram';
 import { useJobActions } from '../hooks/useJobActions';
+import Leaderboard from './Leaderboard';
 
 // ── Accent constant ────────────────────────────────────────────────────────────
 const A   = '#F59E0B';
@@ -105,6 +106,7 @@ export default function JobBoard() {
   const [demoJobIds, setDemoJobIds]         = useState<{ p1?: number; p2?: number }>({});
   const demoPosterAddrRef                   = React.useRef<string | null>(null);
   const demoWorkerAddrRef                   = React.useRef<string | null>(null);
+  const [rightTab, setRightTab]             = useState<'activity' | 'leaderboard'>('activity');
 
   // ── Clock tick (for relative timestamps) ──────────────────────────────────
   useEffect(() => {
@@ -561,7 +563,39 @@ export default function JobBoard() {
               onError={(msg) => showToast(msg, undefined, true)}
             />
           )}
-          <ActivityPanel events={feedEvents} compact={demoStep > 0} />
+          {/* Right-panel tab switcher — hidden during demo */}
+          {!demoStep && (
+            <div style={{
+              display: 'flex', gap: 0,
+              borderBottom: '1px solid var(--border)',
+              padding: '0 20px',
+            }}>
+              {(['activity', 'leaderboard'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setRightTab(tab)}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    padding: '10px 14px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 10, fontWeight: 600,
+                    letterSpacing: '0.1em',
+                    textTransform: 'uppercase' as const,
+                    color: rightTab === tab ? A : 'rgba(255,255,255,0.3)',
+                    borderBottom: `2px solid ${rightTab === tab ? A : 'transparent'}`,
+                    marginBottom: -1,
+                    transition: 'color 0.15s, border-color 0.15s',
+                  }}
+                >
+                  {tab === 'activity' ? 'Activity' : '🏆 Leaderboard'}
+                </button>
+              ))}
+            </div>
+          )}
+          {rightTab === 'activity' || demoStep > 0
+            ? <ActivityPanel events={feedEvents} compact={demoStep > 0} />
+            : <Leaderboard chainJobs={chainJobs} />
+          }
         </div>
       </div>
     </div>
