@@ -21,9 +21,9 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const TORQUE_API  = 'https://api.torque.so';
-const API_KEY     = process.env.TORQUE_API_KEY;
-const CAMPAIGN_ID = process.env.TORQUE_CAMPAIGN_ID;
+const TORQUE_INGEST = 'https://ingest.torque.so';
+const API_KEY       = process.env.TORQUE_API_KEY;
+const CAMPAIGN_ID   = process.env.TORQUE_CAMPAIGN_ID;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS — allow the Brewing dashboard origin
@@ -51,19 +51,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const torqueRes = await fetch(`${TORQUE_API}/v1/campaigns/${CAMPAIGN_ID}/events`, {
+    const torqueRes = await fetch(`${TORQUE_INGEST}/events`, {
       method:  'POST',
       headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${API_KEY}`,
+        'Content-Type': 'application/json',
+        'x-api-key':    API_KEY,
       },
       body: JSON.stringify({
-        eventType,
-        userAddress,
-        metadata: {
-          source:    'brewing-marketplace',
-          network:   'solana-devnet',
-          timestamp: new Date().toISOString(),
+        userPubkey: userAddress,
+        timestamp:  Date.now(),
+        eventName:  eventType,
+        data: {
+          campaignId: CAMPAIGN_ID,
+          source:     'brewing-marketplace',
+          network:    'solana-devnet',
           ...metadata,
         },
       }),
