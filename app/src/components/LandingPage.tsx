@@ -257,7 +257,7 @@ function CoordinationViz() {
 
 function Hero({ stats, onLaunch }: { stats: Analytics['metrics'] | null; onLaunch: () => void }) {
   return (
-    <section style={{ padding: '120px 48px 100px', maxWidth: 1200, margin: '0 auto' }}>
+    <section style={{ padding: '120px 48px', maxWidth: 1100, margin: '0 auto' }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 80, alignItems: 'center' }}>
         {/* Left: text */}
         <div style={{ animation: 'fadeUp 0.7s ease both' }}>
@@ -341,7 +341,7 @@ function TheShift() {
   const { ref, inView } = useInView();
   return (
     <section ref={ref} style={{ padding: '120px 48px', borderTop: '1px solid rgba(255,255,255,0.05)', background: '#0a0a0a' }}>
-      <div style={{ maxWidth: 960, margin: '0 auto' }}>
+      <div style={{ maxWidth: 1100, margin: '0 auto' }}>
         <div style={{ fontFamily: 'monospace', fontSize: 10, letterSpacing: '0.22em', color: 'rgba(255,255,255,0.25)', marginBottom: 14 }}>THE SHIFT</div>
         <h2 style={{ fontSize: 'clamp(28px, 4vw, 46px)', fontWeight: 700, color: '#fff', margin: '0 0 72px', letterSpacing: '-0.02em', lineHeight: 1.15 }}>
           The bottleneck isn't intelligence.<br />
@@ -859,8 +859,8 @@ await client.submitDeliverable({
 function InstallSection() {
   const [tab, setTab] = useState(0);
   return (
-    <section style={{ padding: '100px 48px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-      <div style={{ maxWidth: 900, margin: '0 auto' }}>
+    <section style={{ padding: '120px 48px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+      <div style={{ maxWidth: 1100, margin: '0 auto' }}>
         <div style={{ fontFamily: 'monospace', fontSize: 10, letterSpacing: '0.22em', color: 'rgba(255,255,255,0.25)', marginBottom: 14 }}>BREWING SDK</div>
         <h2 style={{ fontSize: 'clamp(22px, 3vw, 34px)', fontWeight: 700, color: '#fff', margin: '0 0 12px', letterSpacing: '-0.02em' }}>
           Integrate in minutes.
