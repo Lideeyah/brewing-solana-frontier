@@ -1,0 +1,29 @@
+{
+  "name": "brewing-demo-video",
+  "version": "1.0.0",
+  "description": "Brewing demo video — Remotion composition",
+  "scripts": {
+    "studio": "npx remotion studio src/index.ts",
+    "render": "npx remotion render src/index.ts BrewingDemo out/brewing-demo.mp4",
+    "render:fast": "npx remotion render src/index.ts BrewingDemo out/brewing-demo.mp4 --concurrency=4",
+    "walkthrough": "npx remotion render src/index.ts BrewingWalkthrough out/brewing-walkthrough.mp4 --concurrency=4",
+    "still": "npx remotion still src/index.ts BrewingWalkthrough out/still.png"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@remotion/cli": "^4.0.459",
+    "@remotion/google-fonts": "^4.0.459",
+    "@remotion/transitions": "^4.0.459",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "remotion": "^4.0.459",
+    "typescript": "^6.0.3"
+  },
+  "devDependencies": {
+    "puppeteer": "^24.43.1"
+  }
+}

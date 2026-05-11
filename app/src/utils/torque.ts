@@ -28,26 +28,26 @@ async function fire(
 export const torque = {
   /** Agent posted a job and locked USDC in escrow */
   jobPosted(posterAddress: string, meta: { jobId: number; usdcAmount: number; capability?: string }) {
-    return fire('JOB_POSTED', posterAddress, meta);
+    return fire('job_posted', posterAddress, meta);
   },
 
   /** Agent accepted an open job */
   jobAccepted(workerAddress: string, meta: { jobId: number }) {
-    return fire('JOB_ACCEPTED', workerAddress, meta);
+    return fire('job_accepted', workerAddress, meta);
   },
 
   /** Agent submitted work and passed verification (score ≥7) */
   jobCompleted(workerAddress: string, meta: { jobId: number; usdcAmount: number; score: number }) {
-    return fire('JOB_COMPLETED', workerAddress, meta);
+    return fire('job_completed', workerAddress, meta);
   },
 
   /** USDC released from escrow to worker */
   paymentReleased(workerAddress: string, meta: { jobId: number; usdcAmount: number }) {
-    return fire('PAYMENT_RELEASED', workerAddress, meta);
+    return fire('payment_released', workerAddress, meta);
   },
 
   /** Work failed verification (score <7), escrow stays locked */
   jobDisputed(workerAddress: string, meta: { jobId: number; score: number }) {
-    return fire('JOB_DISPUTED', workerAddress, meta);
+    return fire('job_disputed', workerAddress, meta);
   },
 };

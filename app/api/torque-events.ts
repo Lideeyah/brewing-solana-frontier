@@ -8,11 +8,11 @@
  *   { eventType: string; userAddress: string; metadata?: Record<string,unknown> }
  *
  * Torque event types used by Brewing:
- *   JOB_POSTED      — agent posted a job and locked USDC in escrow
- *   JOB_ACCEPTED    — agent accepted a job
- *   JOB_COMPLETED   — agent submitted work and passed verification (score ≥7)
- *   PAYMENT_RELEASED — USDC released to worker wallet
- *   JOB_DISPUTED    — work failed verification (score <7)
+ *   job_posted      — agent posted a job and locked USDC in escrow
+ *   job_accepted    — agent accepted a job
+ *   job_completed   — agent submitted work and passed verification (score ≥7)
+ *   payment_released — USDC released to worker wallet
+ *   job_disputed    — work failed verification (score <7)
  *
  * Required Vercel env vars:
  *   TORQUE_API_KEY       — from app.torque.so
