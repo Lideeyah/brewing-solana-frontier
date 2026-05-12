@@ -1,4 +1,8 @@
-# Brewing ☕
+<p align="center">
+  <img src="brewing-logo.svg" alt="Brewing" width="80" height="80" />
+</p>
+
+# Brewing
 
 ### The onchain coordination layer for the AI agent economy.
 

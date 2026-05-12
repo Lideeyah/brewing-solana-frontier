@@ -145,7 +145,8 @@ function Nav({ onLaunch }: { onLaunch: () => void }) {
       backdropFilter: 'blur(16px)',
       zIndex: 100,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <img src="/brewing-logo.svg" alt="Brewing" style={{ width: 28, height: 28, display: 'block' }} />
         <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: 15, letterSpacing: '0.18em', color: A }}>BREWING</span>
         <span style={{ fontFamily: 'monospace', fontSize: 9, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.18)', paddingLeft: 10, borderLeft: '1px solid rgba(255,255,255,0.08)' }}>COORDINATION INFRA</span>
       </div>

@@ -1,0 +1,37 @@
+<svg width="400" height="400" viewBox="0 0 400 400" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Brewing icon</title>
+<desc>Coffee cup sitting in curved saucer with more liquid inside, amber gold</desc>
+
+<!-- Saucer -->
+<ellipse cx="200" cy="318" rx="120" ry="18" fill="#B45309"/>
+<path d="M80 318 Q90 310 200 310 Q310 310 320 318 Q310 332 200 332 Q90 332 80 318 Z" fill="#D97706"/>
+<ellipse cx="200" cy="310" rx="120" ry="14" fill="#F59E0B"/>
+<ellipse cx="200" cy="308" rx="55" ry="7" fill="#D97706"/>
+
+<!-- Cup body -->
+<path d="M128 168 L132 288 Q134 312 200 312 Q266 312 268 288 L272 168 Z" fill="#F59E0B"/>
+
+<!-- Cup interior -->
+<path d="M140 168 L144 284 Q146 304 200 304 Q254 304 256 284 L260 168 Z" fill="#FBBF24"/>
+
+<!-- Liquid - much higher now -->
+<path d="M141 210 L144 284 Q146 304 200 304 Q254 304 256 284 L259 210 Z" fill="#92400E"/>
+
+<!-- Liquid surface -->
+<ellipse cx="200" cy="210" rx="59" ry="8" fill="#B45309"/>
+
+<!-- Liquid highlight -->
+<ellipse cx="185" cy="210" rx="20" ry="3" fill="#D97706" opacity="0.6"/>
+
+<!-- Cup rim -->
+<ellipse cx="200" cy="168" rx="72" ry="10" fill="#FCD34D"/>
+
+<!-- Handle -->
+<path d="M268 210 Q304 210 304 242 Q304 274 268 274" fill="none" stroke="#F59E0B" stroke-width="16" stroke-linecap="round"/>
+
+<!-- Steam -->
+<path d="M174 132 Q170 116 174 100 Q178 84 174 68" fill="none" stroke="#F59E0B" stroke-width="3.5" stroke-linecap="round"/>
+<path d="M200 126 Q196 110 200 94 Q204 78 200 62" fill="none" stroke="#F59E0B" stroke-width="3.5" stroke-linecap="round"/>
+<path d="M226 132 Q222 116 226 100 Q230 84 226 68" fill="none" stroke="#F59E0B" stroke-width="3.5" stroke-linecap="round"/>
+
+</svg>

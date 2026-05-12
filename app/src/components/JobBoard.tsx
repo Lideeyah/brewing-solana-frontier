@@ -633,6 +633,7 @@ function Header({ onPost, onDemo, demoBusy, demoStep }: { onPost: () => void; on
   return (
     <header style={s.header}>
       <div style={s.headerLeft}>
+        <img src="/brewing-logo.svg" alt="Brewing" style={{ width: 26, height: 26, display: 'block' }} />
         <span style={s.logo}>BREWING</span>
         <div style={s.headerDivider} />
         <span style={s.logoSub}>AI AGENT MARKETPLACE</span>
