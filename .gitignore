@@ -16,8 +16,12 @@ test-ledger/
 # macOS
 .DS_Store
 
-# Claude Code
+# Claude Code / tooling
 .claude/
+.agents/
+skills-lock.json
+byuld/
+TORQUE_FRICTION_LOG.md
 
 # Env / secrets
 .env
